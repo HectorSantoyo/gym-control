@@ -1,0 +1,41 @@
+:root {
+    --color-primary: #2563EB;
+    --color-bg: #F5F7FA;
+    --color-text: #1F2937;
+    --color-card: #FFFFFF;
+    --color-border: #E5E7EB;
+    --color-vigente: #16A34A;
+    --color-por-vencer: #F59E0B;
+    --color-vencida: #DC2626;
+}
+
+body {
+    background-color: var(--color-bg);
+    color: var(--color-text);
+}
+
+.navbar {
+    background-color: var(--color-primary);
+}
+
+.card {
+    background-color: var(--color-card);
+    border-color: var(--color-border);
+}
+
+.btn-primary {
+    background-color: var(--color-primary);
+    border-color: var(--color-primary);
+}
+
+.badge-vigente {
+    background-color: var(--color-vigente);
+}
+
+.badge-por-vencer {
+    background-color: var(--color-por-vencer);
+}
+
+.badge-vencida {
+    background-color: var(--color-vencida);
+}
