@@ -107,37 +107,47 @@ Evitar:
 
 ---
 
-## Sprint actual: Sprint 0
+## Sprint actual: Sprint 1 — Gestión de clientes
 
 ### Objetivo
 
-Dejar una base técnica y visual funcional.
+Permitir registrar, consultar, editar, buscar, activar y desactivar clientes.
+
+### Datos del cliente
+
+- ID de acceso numérico de 4 dígitos, único y generado automáticamente dentro del rango 1000–9999.
+- El sistema debe verificar la unicidad antes de guardar y volver a generar el ID si ya está ocupado.
+- Nombre completo obligatorio.
+- Teléfono opcional.
+- Fotografía opcional.
+- Fecha de alta automática.
+- Estado activo/inactivo.
+- Notas opcionales.
 
 ### Alcance
 
-- Estructura global de plantillas.
-- Página inicial.
-- Navegación básica.
-- Estilos globales.
-- Bootstrap.
-- Configuración local de idioma y zona horaria.
-- Configuración de archivos multimedia para futuras fotografías.
-- Acceso al panel administrativo.
-- Validación responsive.
+- Modelo Cliente.
+- Migración.
+- Django Admin.
+- Alta y edición.
+- Lista y búsqueda por nombre o ID.
+- Perfil individual.
+- Carga de fotografía desde archivos o cámara.
+- Activación y desactivación.
+- Diseño mobile-first.
 
 ### Fuera del alcance
 
 No implementar todavía:
 
-- Modelos de clientes.
 - Pagos.
 - Membresías.
+- Vigencias.
 - Asistencias.
 - Check-in.
 - QR.
-- Fotografías de clientes.
-- Dashboard real.
-- Importación de datos.
+- Dispositivo recordado.
+- Dashboard con estadísticas.
 
 ---
 

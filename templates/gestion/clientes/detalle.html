@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}{{ cliente.nombre_completo }} · Gym Control{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-body text-center">
+        {% if cliente.fotografia %}
+            <img src="{{ cliente.fotografia.url }}" alt="{{ cliente.nombre_completo }}" class="foto-cliente foto-cliente-grande mb-3">
+        {% else %}
+            <span class="foto-placeholder foto-placeholder-grande mb-3">{{ cliente.nombre_completo|first|upper }}</span>
+        {% endif %}
+
+        <h1 class="h4 mb-1">{{ cliente.nombre_completo }}</h1>
+        <p class="display-6 fw-bold text-primary mb-2">{{ cliente.id_acceso }}</p>
+
+        {% if cliente.activo %}
+            <span class="badge badge-vigente mb-3">Activo</span>
+        {% else %}
+            <span class="badge badge-vencida mb-3">Inactivo</span>
+        {% endif %}
+
+        <dl class="row text-start mt-3">
+            <dt class="col-4">Teléfono</dt>
+            <dd class="col-8">{{ cliente.telefono|default:"—" }}</dd>
+
+            <dt class="col-4">Fecha de alta</dt>
+            <dd class="col-8">{{ cliente.fecha_alta|date:"d/m/Y H:i" }}</dd>
+
+            <dt class="col-4">Notas</dt>
+            <dd class="col-8">{{ cliente.notas|default:"—"|linebreaksbr }}</dd>
+        </dl>
+
+        <div class="d-flex gap-2 justify-content-center flex-wrap mt-3">
+            <a href="{% url 'gestion:cliente_editar' cliente.id_acceso %}" class="btn btn-primary">Editar</a>
+            <form method="post" action="{% url 'gestion:cliente_toggle_activo' cliente.id_acceso %}">
+                {% csrf_token %}
+                {% if cliente.activo %}
+                    <button type="submit" class="btn btn-outline-danger">Desactivar</button>
+                {% else %}
+                    <button type="submit" class="btn btn-outline-success">Activar</button>
+                {% endif %}
+            </form>
+            <a href="{% url 'gestion:cliente_lista' %}" class="btn btn-outline-secondary">Volver a la lista</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

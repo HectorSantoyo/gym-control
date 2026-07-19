@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}Clientes · Gym Control{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3 gap-2 flex-wrap">
+    <h1 class="h4 mb-0">Clientes</h1>
+    <a href="{% url 'gestion:cliente_crear' %}" class="btn btn-primary btn-sm">+ Nuevo cliente</a>
+</div>
+
+<form method="get" class="mb-3">
+    <input type="search" name="q" value="{{ query }}" class="form-control" placeholder="Buscar por nombre o ID">
+</form>
+
+{% if clientes %}
+<div class="list-group">
+    {% for cliente in clientes %}
+    <div class="list-group-item d-flex align-items-center gap-3 flex-wrap">
+        {% if cliente.fotografia %}
+            <img src="{{ cliente.fotografia.url }}" alt="" class="foto-cliente">
+        {% else %}
+            <span class="foto-placeholder">{{ cliente.nombre_completo|first|upper }}</span>
+        {% endif %}
+
+        <div class="flex-grow-1">
+            <span class="d-block fw-semibold">{{ cliente.nombre_completo }}</span>
+            <span class="d-block text-body-secondary small">
+                ID {{ cliente.id_acceso }}{% if cliente.telefono %} · {{ cliente.telefono }}{% endif %}
+            </span>
+        </div>
+
+        {% if cliente.activo %}
+            <span class="badge badge-vigente">Activo</span>
+        {% else %}
+            <span class="badge badge-vencida">Inactivo</span>
+        {% endif %}
+
+        <div class="d-flex gap-2">
+            <a href="{% url 'gestion:cliente_detalle' cliente.id_acceso %}" class="btn btn-outline-primary btn-sm">Ver</a>
+            <a href="{% url 'gestion:cliente_editar' cliente.id_acceso %}" class="btn btn-outline-secondary btn-sm">Editar</a>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<p class="text-body-secondary">No se encontraron clientes.</p>
+{% endif %}
+{% endblock %}

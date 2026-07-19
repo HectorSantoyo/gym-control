@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}{{ titulo }} · Gym Control{% endblock %}
+
+{% block content %}
+<h1 class="h4 mb-3">{{ titulo }}</h1>
+
+<form method="post" enctype="multipart/form-data" novalidate>
+    {% csrf_token %}
+
+    <div class="mb-3">
+        <label for="{{ form.nombre_completo.id_for_label }}" class="form-label">Nombre completo</label>
+        {{ form.nombre_completo }}
+        {% for error in form.nombre_completo.errors %}
+            <div class="text-danger small">{{ error }}</div>
+        {% endfor %}
+    </div>
+
+    <div class="mb-3">
+        <label for="{{ form.telefono.id_for_label }}" class="form-label">Teléfono</label>
+        {{ form.telefono }}
+    </div>
+
+    <div class="mb-3">
+        <label for="{{ form.fotografia.id_for_label }}" class="form-label">Fotografía</label>
+        <div class="d-flex gap-2 flex-wrap mb-2">
+            <button type="button" class="btn btn-outline-primary btn-sm" data-foto-accion="camara">Tomar foto</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" data-foto-accion="archivo">Seleccionar archivo</button>
+        </div>
+        {{ form.fotografia }}
+        <div class="form-text">"Tomar foto" abre la cámara; "Seleccionar archivo" abre la galería o el explorador de archivos.</div>
+    </div>
+
+    <div class="mb-3">
+        <label for="{{ form.notas.id_for_label }}" class="form-label">Notas</label>
+        {{ form.notas }}
+    </div>
+
+    <div class="form-check mb-3">
+        {{ form.activo }}
+        <label class="form-check-label" for="{{ form.activo.id_for_label }}">Cliente activo</label>
+    </div>
+
+    <div class="d-flex gap-2">
+        <button type="submit" class="btn btn-primary">Guardar</button>
+        {% if cliente %}
+            <a href="{% url 'gestion:cliente_detalle' cliente.id_acceso %}" class="btn btn-outline-secondary">Cancelar</a>
+        {% else %}
+            <a href="{% url 'gestion:cliente_lista' %}" class="btn btn-outline-secondary">Cancelar</a>
+        {% endif %}
+    </div>
+</form>
+
+<script src="{% static 'js/cliente_formulario.js' %}"></script>
+{% endblock %}
