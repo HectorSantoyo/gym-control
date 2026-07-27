@@ -1,5 +1,6 @@
 :root {
     --color-primary: #2563EB;
+    --color-primary-rgb: 37, 99, 235;
     --color-bg: #F5F7FA;
     --color-text: #1F2937;
     --color-card: #FFFFFF;
@@ -7,6 +8,7 @@
     --color-vigente: #16A34A;
     --color-por-vencer: #F59E0B;
     --color-vencida: #DC2626;
+    --color-sin-pagos: #6B7280;
 }
 
 body {
@@ -40,6 +42,14 @@ body {
     background-color: var(--color-vencida);
 }
 
+.badge-en-gracia {
+    background-color: var(--color-por-vencer);
+}
+
+.badge-sin-pagos {
+    background-color: var(--color-sin-pagos);
+}
+
 .foto-cliente {
     width: 48px;
     height: 48px;
@@ -64,4 +74,127 @@ body {
     width: 120px;
     height: 120px;
     font-size: 2rem;
+}
+
+.opciones-tarjeta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.75rem;
+}
+
+.opcion-tarjeta {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 1rem 1.1rem;
+    border: 1px solid var(--color-border);
+    border-radius: 0.5rem;
+    background-color: var(--color-card);
+    cursor: pointer;
+    font-weight: 500;
+    margin-bottom: 0;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.opcion-tarjeta:hover {
+    border-color: var(--color-primary);
+}
+
+.opcion-tarjeta.is-seleccionada {
+    border-color: var(--color-primary);
+    background-color: rgba(var(--color-primary-rgb), 0.08);
+}
+
+.opcion-tarjeta.is-seleccionada::after {
+    content: "\2713";
+    position: absolute;
+    top: 0.4rem;
+    right: 0.6rem;
+    color: var(--color-primary);
+    font-weight: 700;
+    font-size: 0.85rem;
+    line-height: 1;
+}
+
+.opcion-tarjeta input {
+    flex-shrink: 0;
+}
+
+.opcion-tarjeta-completa {
+    display: flex;
+    width: 100%;
+}
+
+.resumen-linea {
+    padding: 0.2rem 0;
+    color: var(--color-text);
+}
+
+.resumen-linea-etiqueta {
+    color: var(--color-text);
+    opacity: 0.65;
+    font-size: 0.9rem;
+}
+
+/* Encabezado del cliente en el formulario de pago */
+.cliente-nombre {
+    font-size: 1.4rem;
+    font-weight: 700;
+    margin-bottom: 0;
+}
+
+.cliente-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+}
+
+.meta-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.65rem;
+    border-radius: 999px;
+    background-color: var(--color-bg);
+    border: 1px solid var(--color-border);
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--color-text);
+}
+
+.badge-outline-primary {
+    background-color: transparent;
+    border: 1px solid var(--color-primary);
+    color: var(--color-primary);
+    font-weight: 600;
+}
+
+/* Más aire en las secciones que lo necesitan */
+.card-body-espaciada {
+    padding: 1.5rem;
+}
+
+/* Separación entre conceptos del desglose de pago */
+.concepto-separado {
+    padding-top: 0.9rem;
+    margin-top: 0.9rem;
+    border-top: 1px solid var(--color-border);
+}
+
+/* Tarjeta de total: protagonista, no una caja más */
+.total-card {
+    background-color: rgba(var(--color-primary-rgb), 0.05);
+    border: 1px solid var(--color-primary);
+}
+
+.total-final {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--color-primary);
+}
+
+/* Zona de acciones */
+.acciones-pago .btn-link {
+    text-decoration: none;
 }

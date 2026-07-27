@@ -45,4 +45,58 @@
         </div>
     </div>
 </div>
+
+<div class="card mt-3">
+    <div class="card-body">
+        <h2 class="h5 mb-3">Membresía</h2>
+
+        {% if estado_actual == "vigente" %}
+            <span class="badge badge-vigente mb-3">Vigente</span>
+        {% elif estado_actual == "por_vencer" %}
+            <span class="badge badge-por-vencer mb-3">Por vencer</span>
+        {% elif estado_actual == "en_gracia" %}
+            <span class="badge badge-en-gracia mb-3">En periodo de gracia</span>
+        {% elif estado_actual == "vencida_con_mora" %}
+            <span class="badge badge-vencida mb-3">Vencida con mora</span>
+        {% else %}
+            <span class="badge badge-sin-pagos mb-3">Sin pagos</span>
+        {% endif %}
+
+        <dl class="row text-start">
+            <dt class="col-6">Tipo de tarifa</dt>
+            <dd class="col-6">{{ cliente.get_tipo_tarifa_display }}</dd>
+
+            <dt class="col-6">Día fijo de pago</dt>
+            <dd class="col-6">{{ cliente.get_dia_pago_display }}</dd>
+
+            <dt class="col-6">Siguiente vencimiento</dt>
+            <dd class="col-6">{{ fecha_vencimiento_pendiente|date:"d/m/Y"|default:"—" }}</dd>
+
+            <dt class="col-6">Mora actual</dt>
+            <dd class="col-6">${{ mora_actual }}</dd>
+
+            <dt class="col-6">Total sugerido</dt>
+            <dd class="col-6">{% if total_sugerido %}${{ total_sugerido }}{% else %}—{% endif %}</dd>
+        </dl>
+
+        <div class="d-flex gap-2 flex-wrap mt-2">
+            <a href="{% url 'gestion:pago_registrar' cliente.id_acceso %}" class="btn btn-primary">Registrar pago</a>
+            <a href="{% url 'gestion:pago_historial' cliente.id_acceso %}" class="btn btn-outline-secondary">
+                Ver historial de pagos
+            </a>
+        </div>
+
+        {% if ultimos_pagos %}
+        <h3 class="h6 mt-4 mb-2">Últimos pagos</h3>
+        <ul class="list-group">
+            {% for pago in ultimos_pagos %}
+            <li class="list-group-item d-flex justify-content-between flex-wrap gap-2">
+                <span>{{ pago.periodo_inicio|date:"d/m/Y" }} – {{ pago.periodo_fin|date:"d/m/Y" }}</span>
+                <span class="fw-semibold">${{ pago.total_pagado }}</span>
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </div>
+</div>
 {% endblock %}

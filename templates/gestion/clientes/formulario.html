@@ -33,6 +33,16 @@
     </div>
 
     <div class="mb-3">
+        <label for="{{ form.tipo_tarifa.id_for_label }}" class="form-label">Tipo de tarifa</label>
+        {{ form.tipo_tarifa }}
+    </div>
+
+    <div class="mb-3">
+        <label for="{{ form.dia_pago.id_for_label }}" class="form-label">Día fijo de pago</label>
+        {{ form.dia_pago }}
+    </div>
+
+    <div class="mb-3">
         <label for="{{ form.notas.id_for_label }}" class="form-label">Notas</label>
         {{ form.notas }}
     </div>

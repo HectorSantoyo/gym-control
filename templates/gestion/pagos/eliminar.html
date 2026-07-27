@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block title %}Eliminar pago · Gym Control{% endblock %}
+
+{% block content %}
+<h1 class="h4 mb-3">Eliminar pago</h1>
+<p>
+    ¿Confirmas eliminar el pago de <strong>{{ cliente.nombre_completo }}</strong> del periodo
+    <strong>{{ pago.periodo_inicio|date:"d/m/Y" }} – {{ pago.periodo_fin|date:"d/m/Y" }}</strong>
+    por ${{ pago.total_pagado }}?
+</p>
+
+<form method="post">
+    {% csrf_token %}
+    <div class="d-flex gap-2">
+        <button type="submit" class="btn btn-danger">Eliminar</button>
+        <a href="{% url 'gestion:pago_historial' cliente.id_acceso %}" class="btn btn-outline-secondary">Cancelar</a>
+    </div>
+</form>
+{% endblock %}

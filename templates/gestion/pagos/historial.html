@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}Historial de pagos · {{ cliente.nombre_completo }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <h1 class="h4 mb-0">Historial de pagos</h1>
+    <a href="{% url 'gestion:pago_registrar' cliente.id_acceso %}" class="btn btn-primary btn-sm">+ Registrar pago</a>
+</div>
+<p class="text-body-secondary mb-3">{{ cliente.nombre_completo }} · ID {{ cliente.id_acceso }}</p>
+
+{% if pagos %}
+<div class="list-group">
+    {% for pago in pagos %}
+    <div class="list-group-item">
+        <div class="d-flex justify-content-between flex-wrap gap-2">
+            <div>
+                <span class="d-block fw-semibold">
+                    {{ pago.periodo_inicio|date:"d/m/Y" }} – {{ pago.periodo_fin|date:"d/m/Y" }}
+                </span>
+                <span class="d-block text-body-secondary small">
+                    Pagado el {{ pago.fecha_pago|date:"d/m/Y" }}{% if pago.metodo_pago %} · {{ pago.metodo_pago }}{% endif %}
+                </span>
+            </div>
+            <div class="text-end">
+                <span class="d-block fw-semibold">${{ pago.total_pagado }}</span>
+                {% if pago.mora %}<span class="d-block text-danger small">Mora: ${{ pago.mora }}</span>{% endif %}
+            </div>
+        </div>
+        {% if pago.pk == ultimo.pk %}
+        <div class="d-flex gap-2 mt-2">
+            <a href="{% url 'gestion:pago_editar' pago.pk %}" class="btn btn-outline-secondary btn-sm">Editar</a>
+            <a href="{% url 'gestion:pago_eliminar' pago.pk %}" class="btn btn-outline-danger btn-sm">Eliminar</a>
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<p class="text-body-secondary">Este cliente no tiene pagos registrados.</p>
+{% endif %}
+
+<a href="{% url 'gestion:cliente_detalle' cliente.id_acceso %}" class="btn btn-outline-secondary mt-3">Volver al perfil</a>
+{% endblock %}

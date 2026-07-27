@@ -107,47 +107,98 @@ Evitar:
 
 ---
 
-## Sprint actual: Sprint 1 — Gestión de clientes
+## Sprint actual: Sprint 2 — Pagos, tarifas y membresías
 
 ### Objetivo
 
-Permitir registrar, consultar, editar, buscar, activar y desactivar clientes.
+Automatizar el control de pagos y calcular automáticamente vencimiento, periodo de gracia, mora y total sugerido.
 
-### Datos del cliente
+### Reglas de negocio
 
-- ID de acceso numérico de 4 dígitos, único y generado automáticamente dentro del rango 1000–9999.
-- El sistema debe verificar la unicidad antes de guardar y volver a generar el ID si ya está ocupado.
-- Nombre completo obligatorio.
-- Teléfono opcional.
-- Fotografía opcional.
-- Fecha de alta automática.
-- Estado activo/inactivo.
-- Notas opcionales.
+**Tarifas:**
+
+- General: 330 MXN.
+- Estudiante: 280 MXN.
+- Inscripción inicial: 50 MXN, normalmente una sola vez.
+
+**Fecha fija:**
+
+- Cada cliente tiene una fecha fija de pago: día 1 o día 15.
+- La selecciona el encargado al dar de alta o editar al cliente.
+- Una vez asignada, no cambia automáticamente.
+
+**Reajuste inicial:**
+
+- Puede ser +50, -50 o 0 MXN.
+- Se aplica una sola vez al incorporar al cliente.
+- Debe registrarse como concepto separado.
+
+**Periodo de gracia:**
+
+- Hay 3 días naturales completos posteriores al vencimiento sin penalización.
+- Ejemplo: vencimiento día 1 → días 2, 3 y 4 son gracia → la mora inicia el día 5.
+
+**Mora:**
+
+- 10 MXN por cada día natural de retraso después del periodo de gracia.
+- El pago tardío no modifica la fecha fija del cliente.
+
+**Estados:**
+
+- Vigente.
+- Por vencer.
+- En periodo de gracia.
+- Vencida con mora.
+
+### Datos adicionales de Cliente
+
+- tipo_tarifa: general o estudiante.
+- dia_pago: 1 o 15.
+- Inscripción registrada/aplicada.
+- Reajuste inicial aplicado.
+
+### Datos de Pago
+
+- cliente.
+- fecha_pago.
+- mensualidad_base.
+- inscripcion.
+- reajuste_inicial.
+- mora.
+- otros_ajustes opcionales.
+- total_pagado.
+- metodo_pago opcional.
+- periodo cubierto.
+- fecha_registro automática.
+- notas opcionales.
 
 ### Alcance
 
-- Modelo Cliente.
-- Migración.
+- Ampliar modelo Cliente.
+- Crear modelo Pago.
+- Migraciones.
 - Django Admin.
-- Alta y edición.
-- Lista y búsqueda por nombre o ID.
-- Perfil individual.
-- Carga de fotografía desde archivos o cámara.
-- Activación y desactivación.
+- Lógica de vencimiento.
+- Periodo de gracia.
+- Mora.
+- Total sugerido.
+- Registro e historial de pagos.
+- Edición/eliminación con recálculo.
+- Integración en perfil.
 - Diseño mobile-first.
+- Pruebas de reglas de negocio.
 
 ### Fuera del alcance
 
 No implementar todavía:
 
-- Pagos.
-- Membresías.
-- Vigencias.
 - Asistencias.
 - Check-in.
 - QR.
 - Dispositivo recordado.
 - Dashboard con estadísticas.
+- WhatsApp.
+- Pagos en línea.
 
 ---
 

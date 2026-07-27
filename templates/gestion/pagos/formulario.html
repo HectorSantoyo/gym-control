@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}{{ titulo }} · Gym Control{% endblock %}
+
+{% block content %}
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+            <h1 class="cliente-nombre">{{ cliente.nombre_completo }}</h1>
+            {% if es_primer_pago %}
+            <span class="badge badge-outline-primary">Primer pago</span>
+            {% endif %}
+        </div>
+        <div class="cliente-meta">
+            <span class="meta-chip">ID {{ cliente.id_acceso }}</span>
+            <span class="meta-chip">Mensualidad {{ cliente.get_tipo_tarifa_display }}</span>
+            <span class="meta-chip">Pago fijo día {{ cliente.dia_pago }}</span>
+        </div>
+    </div>
+</div>
+
+{% if periodo_pendiente and not es_primer_pago %}
+<div class="alert alert-info">
+    Periodo a cubrir: <strong>{{ periodo_pendiente.0|date:"d/m/Y" }} – {{ periodo_pendiente.1|date:"d/m/Y" }}</strong>
+</div>
+{% endif %}
+
+<form method="post" novalidate id="form-pago">
+    {% csrf_token %}
+
+    {% for error in form.non_field_errors %}
+        <div class="alert alert-danger">{{ error }}</div>
+    {% endfor %}
+
+    {% if form.periodo_seleccionado %}
+    <div class="card mb-3">
+        <div class="card-body card-body-espaciada">
+            <h2 class="h6 mb-1">Primer periodo</h2>
+            <p class="text-body-secondary small mb-3">
+                Este cliente no tiene pagos previos. Elige el periodo exacto que cubre este pago.
+            </p>
+            <div class="opciones-tarjeta">
+                {% for opcion in form.periodo_seleccionado %}
+                <label class="opcion-tarjeta" for="{{ opcion.id_for_label }}">
+                    {{ opcion.tag }}
+                    <span>{{ opcion.choice_label }}</span>
+                </label>
+                {% endfor %}
+            </div>
+            {% for error in form.periodo_seleccionado.errors %}
+                <div class="text-danger small mt-2">{{ error }}</div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="card mb-3">
+        <div class="card-body card-body-espaciada">
+            <h2 class="h6 mb-3">Desglose del pago</h2>
+
+            <div class="d-flex justify-content-between align-items-center">
+                <span class="resumen-linea-etiqueta">Mensualidad</span>
+                <strong id="valor-mensualidad" class="fs-5" data-monto="{{ mensualidad_base }}">${{ mensualidad_base }}</strong>
+            </div>
+
+            {% if form.cobrar_inscripcion %}
+            <div class="concepto-separado">
+                <label class="opcion-tarjeta opcion-tarjeta-completa" for="{{ form.cobrar_inscripcion.id_for_label }}">
+                    {{ form.cobrar_inscripcion }}
+                    <span>Cobrar inscripción +${{ inscripcion_monto }}</span>
+                </label>
+            </div>
+            {% endif %}
+
+            {% if form.reajuste_inicial %}
+            <div class="concepto-separado">
+                <span class="d-block mb-2 resumen-linea-etiqueta">Reajuste inicial</span>
+                <div class="opciones-tarjeta">
+                    {% for opcion in form.reajuste_inicial %}
+                    <label class="opcion-tarjeta" for="{{ opcion.id_for_label }}">
+                        {{ opcion.tag }}
+                        <span>{{ opcion.choice_label }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+                {% for error in form.reajuste_inicial.errors %}
+                    <div class="text-danger small mt-2">{{ error }}</div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            <div class="concepto-separado">
+                <div id="otros-ajustes-toggle">
+                    <button type="button" class="btn btn-link p-0" id="btn-agregar-ajuste">+ Agregar ajuste adicional</button>
+                </div>
+                <div id="otros-ajustes-campo" class="mt-2 d-none">
+                    <label class="form-label" for="{{ form.otros_ajustes.id_for_label }}">Otros ajustes</label>
+                    {{ form.otros_ajustes }}
+                    {% for error in form.otros_ajustes.errors %}
+                        <div class="text-danger small">{{ error }}</div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-3">Fecha de pago</h2>
+
+            {% if es_edicion %}
+            <label class="form-label" for="{{ form.fecha_pago.id_for_label }}">Fecha de pago</label>
+            {{ form.fecha_pago }}
+            {% else %}
+            <div id="fecha-pago-resumen" class="d-flex align-items-center gap-2 flex-wrap">
+                <span>Fecha de pago: <strong>Hoy, {{ hoy|date:"j" }} de {{ hoy|date:"F"|lower }} de {{ hoy|date:"Y" }}</strong></span>
+                <button type="button" class="btn btn-link p-0" id="btn-cambiar-fecha">Cambiar fecha</button>
+            </div>
+            <div id="fecha-pago-campo" class="mt-2 d-none">
+                <label class="form-label" for="{{ form.fecha_pago.id_for_label }}">Fecha de pago</label>
+                {{ form.fecha_pago }}
+            </div>
+            {% endif %}
+            {% for error in form.fecha_pago.errors %}
+                <div class="text-danger small mt-2">{{ error }}</div>
+            {% endfor %}
+
+            {% if mora_estimada %}
+            <div class="alert alert-warning mt-3 mb-0">
+                Mora estimada si se paga hoy: <strong>${{ mora_estimada }}</strong>. Se recalculará según la fecha de pago exacta al guardar.
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-3">Método de pago</h2>
+            {{ form.metodo_pago }}
+            {% for error in form.metodo_pago.errors %}
+                <div class="text-danger small mt-2">{{ error }}</div>
+            {% endfor %}
+            <div id="metodo-otro-campo" class="mt-2 d-none">
+                <label class="form-label" for="{{ form.metodo_pago_otro.id_for_label }}">Especifica el método</label>
+                {{ form.metodo_pago_otro }}
+                {% for error in form.metodo_pago_otro.errors %}
+                    <div class="text-danger small">{{ error }}</div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label" for="{{ form.notas.id_for_label }}">Notas</label>
+        {{ form.notas }}
+    </div>
+
+    <div class="card mb-3 total-card">
+        <div class="card-body card-body-espaciada">
+            <h2 class="h6 mb-3">Total</h2>
+            <div class="resumen-linea d-flex justify-content-between">
+                <span class="resumen-linea-etiqueta">Mensualidad</span>
+                <span id="resumen-mensualidad" class="fw-semibold">$0</span>
+            </div>
+            {% if form.cobrar_inscripcion %}
+            <div class="resumen-linea d-flex justify-content-between">
+                <span class="resumen-linea-etiqueta">Inscripción</span>
+                <span id="resumen-inscripcion" class="fw-semibold">$0</span>
+            </div>
+            {% endif %}
+            {% if form.reajuste_inicial %}
+            <div class="resumen-linea d-flex justify-content-between">
+                <span class="resumen-linea-etiqueta">Reajuste</span>
+                <span id="resumen-reajuste" class="fw-semibold">$0</span>
+            </div>
+            {% endif %}
+            {% if mora_estimada %}
+            <div class="resumen-linea d-flex justify-content-between">
+                <span class="resumen-linea-etiqueta">Mora</span>
+                <span id="resumen-mora" class="fw-semibold">${{ mora_estimada }}</span>
+            </div>
+            {% endif %}
+            <div class="resumen-linea d-flex justify-content-between">
+                <span class="resumen-linea-etiqueta">Otros ajustes</span>
+                <span id="resumen-otros" class="fw-semibold">$0</span>
+            </div>
+            <hr class="my-2">
+            <div class="d-flex justify-content-between align-items-center">
+                <span class="fw-semibold">TOTAL</span>
+                <strong id="total-estimado" class="total-final"
+                        data-mora="{{ mora_estimada|default:'0' }}"
+                        data-inscripcion-monto="{{ inscripcion_monto|default:'0' }}">$0</strong>
+            </div>
+        </div>
+    </div>
+
+    <div class="d-grid gap-2 acciones-pago">
+        <button type="submit" class="btn btn-primary btn-lg">Guardar pago</button>
+        <a href="{% url 'gestion:cliente_detalle' cliente.id_acceso %}" class="btn btn-link text-body-secondary">Cancelar</a>
+    </div>
+</form>
+
+<script src="{% static 'js/pago_formulario.js' %}"></script>
+{% endblock %}
