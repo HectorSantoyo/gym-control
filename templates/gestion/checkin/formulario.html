@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Check-in · Gym Control{% endblock %}
+
+{% block content %}
+<div class="card checkin-card mx-auto">
+    <div class="card-body text-center">
+        {% if cliente_recordado %}
+            {% if cliente_recordado.fotografia %}
+                <img src="{{ cliente_recordado.fotografia.url }}" alt="{{ cliente_recordado.nombre_completo }}" class="foto-cliente foto-cliente-grande mb-3">
+            {% else %}
+                <span class="foto-placeholder foto-placeholder-grande mb-3">{{ cliente_recordado.nombre_completo|first|upper }}</span>
+            {% endif %}
+
+            <h1 class="h4 mb-3">Hola, {{ cliente_recordado.nombre_completo }}</h1>
+
+            <form method="post" action="{% url 'gestion:checkin_confirmar' %}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-primary btn-lg w-100 mb-2">Registrar mi entrada</button>
+            </form>
+            <form method="post" action="{% url 'gestion:checkin_olvidar' %}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-link">No soy esta persona</button>
+            </form>
+
+        {% else %}
+            <h1 class="h4 mb-3">Registra tu entrada</h1>
+            <form method="post" novalidate>
+                {% csrf_token %}
+                <div class="mb-3 text-start">
+                    <label for="{{ form.id_acceso.id_for_label }}" class="form-label fw-semibold">
+                        {{ form.id_acceso.label }}
+                    </label>
+                    {{ form.id_acceso }}
+                    {% if form.id_acceso.errors %}
+                        <div class="text-danger small mt-2">{{ form.id_acceso.errors.0 }}</div>
+                    {% endif %}
+                </div>
+                <div class="form-check text-start mb-3">
+                    {{ form.recordarme }}
+                    <label class="form-check-label" for="{{ form.recordarme.id_for_label }}">
+                        {{ form.recordarme.label }}
+                    </label>
+                </div>
+                <button type="submit" class="btn btn-primary btn-lg w-100">Registrar entrada</button>
+            </form>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

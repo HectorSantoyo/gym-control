@@ -15,4 +15,8 @@ urlpatterns = [
     path("clientes/<int:id_acceso>/pagos/", views.pago_historial, name="pago_historial"),
     path("pagos/<int:pago_id>/editar/", views.pago_editar, name="pago_editar"),
     path("pagos/<int:pago_id>/eliminar/", views.pago_eliminar, name="pago_eliminar"),
+    path("checkin/", views.checkin, name="checkin"),
+    path("checkin/confirmar/", views.checkin_confirmar, name="checkin_confirmar"),
+    path("checkin/olvidar/", views.checkin_olvidar, name="checkin_olvidar"),
+    path("asistencias/", views.asistencia_lista, name="asistencia_lista"),
 ]

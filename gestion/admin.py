@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Cliente, Pago
+from .models import Asistencia, Cliente, Pago
 
 
 @admin.register(Cliente)
@@ -25,3 +25,11 @@ class PagoAdmin(admin.ModelAdmin):
     list_filter = ("metodo_pago",)
     search_fields = ("cliente__nombre_completo", "cliente__id_acceso")
     readonly_fields = ("mora", "total_pagado", "fecha_registro")
+
+
+@admin.register(Asistencia)
+class AsistenciaAdmin(admin.ModelAdmin):
+    list_display = ("cliente", "fecha_hora", "estado_membresia", "origen")
+    list_filter = ("estado_membresia", "origen")
+    search_fields = ("cliente__nombre_completo", "cliente__id_acceso")
+    readonly_fields = ("fecha_hora", "estado_membresia", "fecha_vencimiento", "mora_al_ingresar")

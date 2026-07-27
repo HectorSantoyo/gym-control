@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+
+{% block title %}Asistencias · Gym Control{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3 gap-2 flex-wrap">
+    <h1 class="h4 mb-0">Asistencias</h1>
+    <span class="meta-chip">Hoy: {{ total_hoy }}</span>
+</div>
+
+<form method="get" class="row g-2 mb-3">
+    <div class="col-12 col-sm-6">
+        <input type="search" name="q" value="{{ query }}" class="form-control" placeholder="Buscar por nombre o ID">
+    </div>
+    <div class="col-8 col-sm-4">
+        <input type="date" name="fecha" value="{{ fecha }}" class="form-control">
+    </div>
+    <div class="col-4 col-sm-2">
+        <button type="submit" class="btn btn-primary w-100">Buscar</button>
+    </div>
+</form>
+
+{% if not fecha_valida %}
+<div class="alert alert-warning" role="alert">Fecha no válida, mostrando todos los resultados.</div>
+{% endif %}
+
+{% if asistencias %}
+<div class="list-group">
+    {% for asistencia in asistencias %}
+    <div class="list-group-item d-flex align-items-center gap-3 flex-wrap">
+        {% if asistencia.cliente.fotografia %}
+            <img src="{{ asistencia.cliente.fotografia.url }}" alt="" class="foto-cliente">
+        {% else %}
+            <span class="foto-placeholder">{{ asistencia.cliente.nombre_completo|first|upper }}</span>
+        {% endif %}
+
+        <div class="flex-grow-1">
+            <span class="d-block fw-semibold">{{ asistencia.cliente.nombre_completo }}</span>
+            <span class="d-block text-body-secondary small">
+                ID {{ asistencia.cliente.id_acceso }} · {{ asistencia.fecha_hora|date:"d/m/Y H:i" }}
+            </span>
+            <span class="d-block text-body-secondary small">
+                Vencimiento: {{ asistencia.fecha_vencimiento|date:"d/m/Y"|default:"—" }}
+                · Mora: ${{ asistencia.mora_al_ingresar }}
+                · {{ asistencia.get_origen_display }}
+            </span>
+        </div>
+
+        {% if asistencia.estado_membresia == "vigente" %}
+            <span class="badge badge-vigente">Vigente</span>
+        {% elif asistencia.estado_membresia == "por_vencer" %}
+            <span class="badge badge-por-vencer">Por vencer</span>
+        {% elif asistencia.estado_membresia == "en_gracia" %}
+            <span class="badge badge-en-gracia">En gracia</span>
+        {% elif asistencia.estado_membresia == "vencida_con_mora" %}
+            <span class="badge badge-vencida">Vencida con mora</span>
+        {% else %}
+            <span class="badge badge-sin-pagos">Sin pagos</span>
+        {% endif %}
+
+        <a href="{% url 'gestion:cliente_detalle' asistencia.cliente.id_acceso %}" class="btn btn-outline-primary btn-sm">Ver cliente</a>
+    </div>
+    {% endfor %}
+</div>
+
+{% if asistencias.has_other_pages %}
+<nav class="mt-3" aria-label="Paginación de asistencias">
+    <ul class="pagination justify-content-center flex-wrap">
+        {% if asistencias.has_previous %}
+        <li class="page-item">
+            <a class="page-link" href="?{% if querystring %}{{ querystring }}&{% endif %}page={{ asistencias.previous_page_number }}">Anterior</a>
+        </li>
+        {% endif %}
+        <li class="page-item disabled">
+            <span class="page-link">Página {{ asistencias.number }} de {{ asistencias.paginator.num_pages }}</span>
+        </li>
+        {% if asistencias.has_next %}
+        <li class="page-item">
+            <a class="page-link" href="?{% if querystring %}{{ querystring }}&{% endif %}page={{ asistencias.next_page_number }}">Siguiente</a>
+        </li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+
+{% else %}
+<p class="text-body-secondary">No se encontraron asistencias.</p>
+{% endif %}
+{% endblock %}

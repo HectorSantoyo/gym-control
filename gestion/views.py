@@ -2,20 +2,31 @@ from datetime import date
 from decimal import Decimal
 
 from django.contrib import messages
+from django.contrib.auth.decorators import login_required
+from django.core.paginator import Paginator
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from django.views.decorators.http import require_POST
 
-from . import membresia
-from .forms import ClienteForm, PagoForm
-from .models import Cliente, Pago
+from . import asistencias, membresia
+from .forms import CheckinForm, ClienteForm, PagoForm
+from .models import Asistencia, Cliente, OrigenAsistencia, Pago
+
+COOKIE_CLIENTE_RECORDADO = "gym_cliente_recordado"
+COOKIE_CLIENTE_RECORDADO_SALT = "gestion.checkin.cliente_recordado"
+COOKIE_CLIENTE_RECORDADO_MAX_AGE = 60 * 60 * 24 * 180  # 180 días
+
+ASISTENCIAS_POR_PAGINA = 20
 
 
+@login_required
 def inicio(request):
     return render(request, "gestion/inicio.html")
 
 
+@login_required
 def lista_clientes(request):
     query = request.GET.get("q", "").strip()
     clientes = Cliente.objects.all().order_by("nombre_completo")
@@ -26,6 +37,7 @@ def lista_clientes(request):
     return render(request, "gestion/clientes/lista.html", {"clientes": clientes, "query": query})
 
 
+@login_required
 def cliente_crear(request):
     if request.method == "POST":
         form = ClienteForm(request.POST, request.FILES)
@@ -38,6 +50,7 @@ def cliente_crear(request):
     return render(request, "gestion/clientes/formulario.html", {"form": form, "titulo": "Nuevo cliente"})
 
 
+@login_required
 def cliente_detalle(request, id_acceso):
     cliente = get_object_or_404(Cliente, id_acceso=id_acceso)
     hoy = timezone.localdate()
@@ -52,6 +65,7 @@ def cliente_detalle(request, id_acceso):
     return render(request, "gestion/clientes/detalle.html", contexto)
 
 
+@login_required
 def cliente_editar(request, id_acceso):
     cliente = get_object_or_404(Cliente, id_acceso=id_acceso)
     if request.method == "POST":
@@ -69,6 +83,7 @@ def cliente_editar(request, id_acceso):
     )
 
 
+@login_required
 @require_POST
 def cliente_toggle_activo(request, id_acceso):
     cliente = get_object_or_404(Cliente, id_acceso=id_acceso)
@@ -79,6 +94,7 @@ def cliente_toggle_activo(request, id_acceso):
     return redirect("gestion:cliente_detalle", id_acceso=cliente.id_acceso)
 
 
+@login_required
 def pago_registrar(request, id_acceso):
     cliente = get_object_or_404(Cliente, id_acceso=id_acceso)
     es_primer_pago = cliente.ultimo_pago() is None
@@ -147,6 +163,7 @@ def pago_registrar(request, id_acceso):
     )
 
 
+@login_required
 def pago_historial(request, id_acceso):
     cliente = get_object_or_404(Cliente, id_acceso=id_acceso)
     return render(
@@ -156,6 +173,7 @@ def pago_historial(request, id_acceso):
     )
 
 
+@login_required
 def pago_editar(request, pago_id):
     pago = get_object_or_404(Pago, pk=pago_id)
     cliente = pago.cliente
@@ -214,6 +232,7 @@ def pago_editar(request, pago_id):
     )
 
 
+@login_required
 def pago_eliminar(request, pago_id):
     pago = get_object_or_404(Pago, pk=pago_id)
     cliente = pago.cliente
@@ -228,3 +247,140 @@ def pago_eliminar(request, pago_id):
         return redirect("gestion:pago_historial", id_acceso=cliente.id_acceso)
 
     return render(request, "gestion/pagos/eliminar.html", {"pago": pago, "cliente": cliente})
+
+
+def _resolver_cliente_recordado(request):
+    """Lee gym_cliente_recordado y devuelve (cliente, cookie_invalida).
+
+    cookie_invalida es True cuando había una cookie en la petición pero no
+    resolvió en un cliente activo (firma inválida/expirada, pk inexistente
+    o cliente inactivo) — señal para que la vista la elimine en el response.
+    """
+    if COOKIE_CLIENTE_RECORDADO not in request.COOKIES:
+        return None, False
+
+    pk = request.get_signed_cookie(
+        COOKIE_CLIENTE_RECORDADO, salt=COOKIE_CLIENTE_RECORDADO_SALT, default=None
+    )
+    if pk is None:
+        return None, True
+
+    cliente = Cliente.objects.filter(pk=pk, activo=True).first()
+    return cliente, cliente is None
+
+
+def _recordar_cliente(response, cliente):
+    response.set_signed_cookie(
+        COOKIE_CLIENTE_RECORDADO,
+        cliente.pk,
+        salt=COOKIE_CLIENTE_RECORDADO_SALT,
+        max_age=COOKIE_CLIENTE_RECORDADO_MAX_AGE,
+        httponly=True,
+        samesite="Lax",
+        # TODO: cambiar a secure=True en producción, cuando el sitio se sirva por HTTPS.
+        secure=False,
+    )
+
+
+def _contexto_resultado(resultado):
+    return {
+        "resultado": resultado,
+        "MOTIVO_CREADA": asistencias.MOTIVO_CREADA,
+        "MOTIVO_DUPLICADO": asistencias.MOTIVO_DUPLICADO,
+        "MOTIVO_CLIENTE_NO_ENCONTRADO": asistencias.MOTIVO_CLIENTE_NO_ENCONTRADO,
+        "MOTIVO_CLIENTE_INACTIVO": asistencias.MOTIVO_CLIENTE_INACTIVO,
+    }
+
+
+def checkin(request):
+    cliente_recordado, cookie_invalida = _resolver_cliente_recordado(request)
+
+    if request.method == "POST":
+        form = CheckinForm(request.POST)
+        if form.is_valid():
+            resultado = asistencias.procesar_checkin(
+                form.cleaned_data["id_acceso"], origen=OrigenAsistencia.CLIENTE
+            )
+            response = render(request, "gestion/checkin/resultado.html", _contexto_resultado(resultado))
+            if form.cleaned_data["recordarme"] and resultado.motivo in (
+                asistencias.MOTIVO_CREADA,
+                asistencias.MOTIVO_DUPLICADO,
+            ):
+                _recordar_cliente(response, resultado.cliente)
+            return response
+    else:
+        form = CheckinForm()
+
+    response = render(
+        request,
+        "gestion/checkin/formulario.html",
+        {"form": form, "cliente_recordado": cliente_recordado},
+    )
+    if cookie_invalida:
+        response.delete_cookie(COOKIE_CLIENTE_RECORDADO)
+    return response
+
+
+@require_POST
+def checkin_confirmar(request):
+    cliente_recordado, cookie_invalida = _resolver_cliente_recordado(request)
+
+    if cliente_recordado is None:
+        response = redirect("gestion:checkin")
+        if cookie_invalida:
+            response.delete_cookie(COOKIE_CLIENTE_RECORDADO)
+        return response
+
+    resultado = asistencias.registrar_asistencia(cliente_recordado, OrigenAsistencia.CLIENTE)
+    return render(request, "gestion/checkin/resultado.html", _contexto_resultado(resultado))
+
+
+@require_POST
+def checkin_olvidar(request):
+    response = redirect("gestion:checkin")
+    response.delete_cookie(COOKIE_CLIENTE_RECORDADO)
+    return response
+
+
+@login_required
+def asistencia_lista(request):
+    query = request.GET.get("q", "").strip()
+    fecha_str = request.GET.get("fecha", "").strip()
+
+    asistencias_qs = Asistencia.objects.select_related("cliente").order_by("-fecha_hora")
+
+    if query:
+        filtro = Q(cliente__nombre_completo__icontains=query)
+        if query.isdigit():
+            filtro |= Q(cliente__id_acceso=int(query))
+        asistencias_qs = asistencias_qs.filter(filtro)
+
+    fecha_valida = True
+    if fecha_str:
+        fecha_filtro = parse_date(fecha_str)
+        if fecha_filtro is None:
+            fecha_valida = False
+        else:
+            asistencias_qs = asistencias_qs.filter(fecha_hora__date=fecha_filtro)
+
+    paginator = Paginator(asistencias_qs, ASISTENCIAS_POR_PAGINA)
+    pagina = paginator.get_page(request.GET.get("page"))
+
+    hoy = timezone.localdate()
+    total_hoy = Asistencia.objects.filter(fecha_hora__date=hoy).count()
+
+    querystring = request.GET.copy()
+    querystring.pop("page", None)
+
+    return render(
+        request,
+        "gestion/asistencias/lista.html",
+        {
+            "asistencias": pagina,
+            "query": query,
+            "fecha": fecha_str,
+            "fecha_valida": fecha_valida,
+            "total_hoy": total_hoy,
+            "querystring": querystring.urlencode(),
+        },
+    )

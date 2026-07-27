@@ -1,15 +1,17 @@
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
-from . import membresia
+from . import asistencias, membresia
 from .forms import ClienteForm
-from .models import Cliente, DiaPago, IdAccesoNoDisponibleError, Pago, TipoTarifa
+from .models import Asistencia, Cliente, DiaPago, IdAccesoNoDisponibleError, OrigenAsistencia, Pago, TipoTarifa
 
 
 class ClienteIdAccesoTests(TestCase):
@@ -61,6 +63,8 @@ class ClienteIdAccesoTests(TestCase):
 
 class ClienteVistasTests(TestCase):
     def setUp(self):
+        self.usuario = User.objects.create_user(username="encargado", password="clave-super-12345")
+        self.client.force_login(self.usuario)
         self.activo = Cliente.objects.create(nombre_completo="Ana Torres", telefono="5511112222")
         self.inactivo = Cliente.objects.create(nombre_completo="Luis Ramírez", activo=False)
 
@@ -497,6 +501,10 @@ class PagoModelTests(TestCase):
 
 
 class PagoFlujoTests(TestCase):
+    def setUp(self):
+        self.usuario = User.objects.create_user(username="encargado", password="clave-super-12345")
+        self.client.force_login(self.usuario)
+
     def _crear_cliente(self, **kwargs):
         defaults = {
             "nombre_completo": "Cliente de prueba",
@@ -909,3 +917,628 @@ class PagoFlujoTests(TestCase):
         )
         response = self.client.get(reverse("gestion:cliente_detalle", args=[vigente.id_acceso]))
         self.assertContains(response, "badge-vigente")
+
+
+class AsistenciaModeloTests(TestCase):
+    def setUp(self):
+        self.cliente = Cliente.objects.create(nombre_completo="Cliente de prueba")
+
+    def test_bd_rechaza_mora_negativa(self):
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Asistencia.objects.create(
+                    cliente=self.cliente,
+                    estado_membresia=membresia.ESTADO_SIN_PAGOS,
+                    mora_al_ingresar=Decimal("-1"),
+                )
+
+    def test_bd_rechaza_estado_membresia_invalido(self):
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Asistencia.objects.create(
+                    cliente=self.cliente,
+                    estado_membresia="no_existe",
+                )
+
+    def test_bd_rechaza_origen_invalido(self):
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Asistencia.objects.create(
+                    cliente=self.cliente,
+                    estado_membresia=membresia.ESTADO_SIN_PAGOS,
+                    origen="otro",
+                )
+
+    def test_origen_por_defecto_es_cliente(self):
+        asistencia = Asistencia.objects.create(
+            cliente=self.cliente,
+            estado_membresia=membresia.ESTADO_SIN_PAGOS,
+        )
+        self.assertEqual(asistencia.origen, OrigenAsistencia.CLIENTE)
+
+    def test_ordering_mas_reciente_primero(self):
+        primera = Asistencia.objects.create(
+            cliente=self.cliente,
+            fecha_hora=timezone.make_aware(datetime(2026, 1, 1, 8, 0)),
+            estado_membresia=membresia.ESTADO_SIN_PAGOS,
+        )
+        segunda = Asistencia.objects.create(
+            cliente=self.cliente,
+            fecha_hora=timezone.make_aware(datetime(2026, 1, 1, 9, 0)),
+            estado_membresia=membresia.ESTADO_SIN_PAGOS,
+        )
+        self.assertEqual(list(self.cliente.asistencias.all()), [segunda, primera])
+        self.assertEqual(self.cliente.ultima_asistencia(), segunda)
+
+
+class AsistenciaServicioTests(TestCase):
+    def _crear_cliente(self, **kwargs):
+        defaults = {
+            "nombre_completo": "Cliente de prueba",
+            "dia_pago": DiaPago.DIA_1,
+            "tipo_tarifa": TipoTarifa.GENERAL,
+        }
+        defaults.update(kwargs)
+        return Cliente.objects.create(**defaults)
+
+    def _ahora(self, *args):
+        return timezone.make_aware(datetime(*args))
+
+    def test_registro_exitoso(self):
+        cliente = self._crear_cliente()
+        ahora = self._ahora(2026, 1, 10, 8, 0)
+        resultado = asistencias.procesar_checkin(cliente.id_acceso, ahora=ahora)
+        self.assertTrue(resultado.ok)
+        self.assertEqual(resultado.motivo, asistencias.MOTIVO_CREADA)
+        self.assertEqual(resultado.asistencia.cliente, cliente)
+        self.assertEqual(resultado.asistencia.fecha_hora, ahora)
+        self.assertEqual(cliente.asistencias.count(), 1)
+
+    def test_cliente_inexistente(self):
+        resultado = asistencias.procesar_checkin(9999)
+        self.assertFalse(resultado.ok)
+        self.assertEqual(resultado.motivo, asistencias.MOTIVO_CLIENTE_NO_ENCONTRADO)
+        self.assertIsNone(resultado.asistencia)
+
+    def test_cliente_inactivo(self):
+        cliente = self._crear_cliente(activo=False)
+        resultado = asistencias.procesar_checkin(cliente.id_acceso)
+        self.assertFalse(resultado.ok)
+        self.assertEqual(resultado.motivo, asistencias.MOTIVO_CLIENTE_INACTIVO)
+        self.assertEqual(cliente.asistencias.count(), 0)
+
+    def test_duplicado_antes_de_cinco_minutos(self):
+        cliente = self._crear_cliente()
+        primero = self._ahora(2026, 1, 10, 8, 0)
+        asistencias.procesar_checkin(cliente.id_acceso, ahora=primero)
+        segundo = primero + timedelta(minutes=4, seconds=59)
+        resultado = asistencias.procesar_checkin(cliente.id_acceso, ahora=segundo)
+        self.assertFalse(resultado.ok)
+        self.assertEqual(resultado.motivo, asistencias.MOTIVO_DUPLICADO)
+        self.assertEqual(cliente.asistencias.count(), 1)
+
+    def test_permitido_exactamente_a_los_cinco_minutos(self):
+        cliente = self._crear_cliente()
+        primero = self._ahora(2026, 1, 10, 8, 0)
+        asistencias.procesar_checkin(cliente.id_acceso, ahora=primero)
+        segundo = primero + timedelta(minutes=5)
+        resultado = asistencias.procesar_checkin(cliente.id_acceso, ahora=segundo)
+        self.assertTrue(resultado.ok)
+        self.assertEqual(cliente.asistencias.count(), 2)
+
+    def test_permitido_despues_de_cinco_minutos(self):
+        cliente = self._crear_cliente()
+        primero = self._ahora(2026, 1, 10, 8, 0)
+        asistencias.procesar_checkin(cliente.id_acceso, ahora=primero)
+        segundo = primero + timedelta(minutes=6)
+        resultado = asistencias.procesar_checkin(cliente.id_acceso, ahora=segundo)
+        self.assertTrue(resultado.ok)
+        self.assertEqual(cliente.asistencias.count(), 2)
+
+    def test_snapshot_historico_no_cambia_tras_un_pago_posterior(self):
+        cliente = self._crear_cliente(dia_pago=DiaPago.DIA_1)
+        Pago.objects.create(
+            cliente=cliente,
+            fecha_pago=date(2026, 1, 1),
+            mensualidad_base=Decimal("330"),
+            periodo_inicio=date(2026, 1, 1),
+            periodo_fin=date(2026, 1, 31),
+        )
+        ahora = self._ahora(2026, 2, 10, 8, 0)
+        resultado = asistencias.procesar_checkin(cliente.id_acceso, ahora=ahora)
+        asistencia = resultado.asistencia
+        self.assertEqual(asistencia.estado_membresia, membresia.ESTADO_VENCIDA_CON_MORA)
+        self.assertEqual(asistencia.fecha_vencimiento, date(2026, 2, 1))
+        self.assertGreater(asistencia.mora_al_ingresar, Decimal("0"))
+
+        Pago.objects.create(
+            cliente=cliente,
+            fecha_pago=date(2026, 2, 10),
+            mensualidad_base=Decimal("330"),
+            periodo_inicio=date(2026, 2, 1),
+            periodo_fin=date(2026, 2, 28),
+        )
+        asistencia.refresh_from_db()
+        self.assertEqual(asistencia.estado_membresia, membresia.ESTADO_VENCIDA_CON_MORA)
+        self.assertEqual(asistencia.fecha_vencimiento, date(2026, 2, 1))
+        self.assertGreater(asistencia.mora_al_ingresar, Decimal("0"))
+
+    def test_origen_cliente_y_manual_se_guardan_correctamente(self):
+        cliente = self._crear_cliente()
+        resultado_cliente = asistencias.procesar_checkin(
+            cliente.id_acceso, origen=OrigenAsistencia.CLIENTE, ahora=self._ahora(2026, 1, 10, 8, 0)
+        )
+        resultado_manual = asistencias.procesar_checkin(
+            cliente.id_acceso, origen=OrigenAsistencia.MANUAL, ahora=self._ahora(2026, 1, 10, 8, 10)
+        )
+        self.assertEqual(resultado_cliente.asistencia.origen, OrigenAsistencia.CLIENTE)
+        self.assertEqual(resultado_manual.asistencia.origen, OrigenAsistencia.MANUAL)
+
+    def test_capturar_estado_membresia_usa_fecha_referencia_coherente(self):
+        cliente = self._crear_cliente(dia_pago=DiaPago.DIA_1)
+        Pago.objects.create(
+            cliente=cliente,
+            fecha_pago=date(2026, 1, 1),
+            mensualidad_base=Decimal("330"),
+            periodo_inicio=date(2026, 1, 1),
+            periodo_fin=date(2026, 1, 31),
+        )
+        ahora = self._ahora(2026, 2, 5, 8, 0)
+        snapshot = asistencias.capturar_estado_membresia(cliente, ahora)
+        fecha_referencia = timezone.localtime(ahora).date()
+        self.assertEqual(snapshot.estado_membresia, cliente.estado_actual(fecha_referencia))
+        self.assertEqual(snapshot.mora, cliente.mora_actual(fecha_referencia))
+        self.assertEqual(snapshot.fecha_vencimiento, cliente.fecha_vencimiento_pendiente())
+
+    def test_fecha_vencimiento_pendiente_no_depende_de_la_fecha_actual(self):
+        cliente = self._crear_cliente(dia_pago=DiaPago.DIA_1)
+        Pago.objects.create(
+            cliente=cliente,
+            fecha_pago=date(2026, 1, 1),
+            mensualidad_base=Decimal("330"),
+            periodo_inicio=date(2026, 1, 1),
+            periodo_fin=date(2026, 1, 31),
+        )
+        vencimiento_original = cliente.fecha_vencimiento_pendiente()
+        with patch("django.utils.timezone.localdate", return_value=date(2030, 1, 1)):
+            self.assertEqual(cliente.fecha_vencimiento_pendiente(), vencimiento_original)
+
+
+class CheckinVistaTests(TestCase):
+    def _crear_cliente(self, **kwargs):
+        defaults = {
+            "nombre_completo": "Cliente de prueba",
+            "dia_pago": DiaPago.DIA_1,
+            "tipo_tarifa": TipoTarifa.GENERAL,
+        }
+        defaults.update(kwargs)
+        return Cliente.objects.create(**defaults)
+
+    def test_get_formulario(self):
+        response = self.client.get(reverse("gestion:checkin"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Registrar entrada")
+
+    def test_post_exitoso_registra_asistencia(self):
+        cliente = self._crear_cliente()
+        response = self.client.post(reverse("gestion:checkin"), {"id_acceso": str(cliente.id_acceso)})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, cliente.nombre_completo)
+        self.assertEqual(Asistencia.objects.count(), 1)
+        asistencia = Asistencia.objects.first()
+        self.assertEqual(asistencia.cliente, cliente)
+        self.assertEqual(asistencia.estado_membresia, membresia.ESTADO_SIN_PAGOS)
+
+    def test_id_inexistente_no_registra(self):
+        response = self.client.post(reverse("gestion:checkin"), {"id_acceso": "9999"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "ID no encontrado")
+        self.assertEqual(Asistencia.objects.count(), 0)
+
+    def test_cliente_inactivo_no_registra(self):
+        cliente = self._crear_cliente(activo=False)
+        response = self.client.post(reverse("gestion:checkin"), {"id_acceso": str(cliente.id_acceso)})
+        self.assertContains(response, "Tu cuenta no está activa")
+        self.assertEqual(Asistencia.objects.count(), 0)
+
+    def test_duplicado_no_registra_segunda_vez(self):
+        cliente = self._crear_cliente()
+        url = reverse("gestion:checkin")
+        self.client.post(url, {"id_acceso": str(cliente.id_acceso)})
+        response = self.client.post(url, {"id_acceso": str(cliente.id_acceso)})
+        self.assertContains(response, "Ya registraste tu entrada")
+        self.assertEqual(Asistencia.objects.count(), 1)
+
+    def test_cliente_vencido_si_registra(self):
+        cliente = self._crear_cliente(dia_pago=DiaPago.DIA_1)
+        hoy = timezone.localdate()
+        periodo_fin = hoy - timedelta(days=60)
+        periodo_inicio = periodo_fin - timedelta(days=29)
+        Pago.objects.create(
+            cliente=cliente,
+            fecha_pago=periodo_inicio,
+            mensualidad_base=Decimal("330"),
+            periodo_inicio=periodo_inicio,
+            periodo_fin=periodo_fin,
+        )
+        response = self.client.post(reverse("gestion:checkin"), {"id_acceso": str(cliente.id_acceso)})
+        self.assertEqual(Asistencia.objects.count(), 1)
+        asistencia = Asistencia.objects.first()
+        self.assertEqual(asistencia.estado_membresia, membresia.ESTADO_VENCIDA_CON_MORA)
+        self.assertContains(response, "vencida")
+
+    def test_id_no_numerico_no_registra(self):
+        response = self.client.post(reverse("gestion:checkin"), {"id_acceso": "abcd"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Ingresa un ID de 4 dígitos.")
+        self.assertEqual(Asistencia.objects.count(), 0)
+
+    def test_id_con_menos_de_4_digitos_no_registra(self):
+        response = self.client.post(reverse("gestion:checkin"), {"id_acceso": "12"})
+        self.assertContains(response, "Ingresa un ID de 4 dígitos.")
+        self.assertEqual(Asistencia.objects.count(), 0)
+
+    def test_id_con_mas_de_4_digitos_no_registra(self):
+        response = self.client.post(reverse("gestion:checkin"), {"id_acceso": "123456"})
+        self.assertContains(response, "Ingresa un ID de 4 dígitos.")
+        self.assertEqual(Asistencia.objects.count(), 0)
+
+    def test_origen_guardado_como_cliente(self):
+        cliente = self._crear_cliente()
+        self.client.post(reverse("gestion:checkin"), {"id_acceso": str(cliente.id_acceso)})
+        asistencia = Asistencia.objects.first()
+        self.assertEqual(asistencia.origen, OrigenAsistencia.CLIENTE)
+
+
+class DispositivoRecordadoTests(TestCase):
+    COOKIE = "gym_cliente_recordado"
+
+    def _crear_cliente(self, **kwargs):
+        defaults = {
+            "nombre_completo": "Cliente de prueba",
+            "dia_pago": DiaPago.DIA_1,
+            "tipo_tarifa": TipoTarifa.GENERAL,
+        }
+        defaults.update(kwargs)
+        return Cliente.objects.create(**defaults)
+
+    def _checkin_con_recordarme(self, cliente, recordarme=True):
+        data = {"id_acceso": str(cliente.id_acceso)}
+        if recordarme:
+            data["recordarme"] = "on"
+        return self.client.post(reverse("gestion:checkin"), data)
+
+    def test_checkbox_recordarme_visible_en_formulario(self):
+        response = self.client.get(reverse("gestion:checkin"))
+        self.assertContains(response, "Recordarme en este dispositivo")
+
+    def test_cookie_creada_cuando_se_marca_recordarme(self):
+        cliente = self._crear_cliente()
+        response = self._checkin_con_recordarme(cliente, recordarme=True)
+        self.assertIn(self.COOKIE, response.cookies)
+
+    def test_cookie_no_creada_si_no_se_marca_recordarme(self):
+        cliente = self._crear_cliente()
+        response = self._checkin_con_recordarme(cliente, recordarme=False)
+        self.assertNotIn(self.COOKIE, response.cookies)
+
+    def test_cookie_no_creada_para_id_inexistente(self):
+        response = self.client.post(
+            reverse("gestion:checkin"), {"id_acceso": "9999", "recordarme": "on"}
+        )
+        self.assertNotIn(self.COOKIE, response.cookies)
+
+    def test_cookie_no_creada_para_cliente_inactivo(self):
+        cliente = self._crear_cliente(activo=False)
+        response = self._checkin_con_recordarme(cliente, recordarme=True)
+        self.assertNotIn(self.COOKIE, response.cookies)
+
+    def test_get_posterior_reconoce_cliente_recordado(self):
+        cliente = self._crear_cliente()
+        self._checkin_con_recordarme(cliente, recordarme=True)
+        response = self.client.get(reverse("gestion:checkin"))
+        self.assertContains(response, cliente.nombre_completo)
+        self.assertContains(response, "Registrar mi entrada")
+        self.assertContains(response, "No soy esta persona")
+
+    def test_get_no_registra_asistencia_automaticamente(self):
+        cliente = self._crear_cliente()
+        self._checkin_con_recordarme(cliente, recordarme=True)
+        self.assertEqual(Asistencia.objects.count(), 1)
+        self.client.get(reverse("gestion:checkin"))
+        self.assertEqual(Asistencia.objects.count(), 1)
+
+    def test_post_confirmar_registra_entrada(self):
+        cliente = self._crear_cliente()
+        ahora = timezone.now()
+        with patch("django.utils.timezone.now", return_value=ahora - timedelta(minutes=10)):
+            self._checkin_con_recordarme(cliente, recordarme=True)
+
+        response = self.client.post(reverse("gestion:checkin_confirmar"))
+        self.assertEqual(Asistencia.objects.count(), 2)
+        self.assertContains(response, cliente.nombre_completo)
+
+    def test_confirmar_dentro_de_cinco_minutos_es_duplicado(self):
+        cliente = self._crear_cliente()
+        self._checkin_con_recordarme(cliente, recordarme=True)
+
+        response = self.client.post(reverse("gestion:checkin_confirmar"))
+        self.assertEqual(Asistencia.objects.count(), 1)
+        self.assertContains(response, "Ya registraste tu entrada")
+
+    def test_olvidar_elimina_cookie_y_redirige(self):
+        cliente = self._crear_cliente()
+        self._checkin_con_recordarme(cliente, recordarme=True)
+
+        response = self.client.post(reverse("gestion:checkin_olvidar"))
+        self.assertRedirects(response, reverse("gestion:checkin"))
+        self.assertEqual(response.cookies[self.COOKIE]["max-age"], 0)
+
+        response = self.client.get(reverse("gestion:checkin"))
+        self.assertNotContains(response, cliente.nombre_completo)
+        self.assertContains(response, "Registra tu entrada")
+
+    def test_cookie_manipulada_se_ignora_y_elimina(self):
+        self.client.cookies[self.COOKIE] = "valor-invalido"
+        response = self.client.get(reverse("gestion:checkin"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Registra tu entrada")
+        self.assertEqual(response.cookies[self.COOKIE]["max-age"], 0)
+
+    def test_cookie_para_cliente_eliminado_se_ignora(self):
+        cliente = self._crear_cliente()
+        self._checkin_con_recordarme(cliente, recordarme=True)
+        Asistencia.objects.filter(cliente=cliente).delete()
+        cliente.delete()
+
+        response = self.client.get(reverse("gestion:checkin"))
+        self.assertContains(response, "Registra tu entrada")
+        self.assertEqual(response.cookies[self.COOKIE]["max-age"], 0)
+
+    def test_cliente_inactivo_despues_de_recordar_se_ignora(self):
+        cliente = self._crear_cliente()
+        self._checkin_con_recordarme(cliente, recordarme=True)
+        cliente.activo = False
+        cliente.save()
+
+        response = self.client.get(reverse("gestion:checkin"))
+        self.assertContains(response, "Registra tu entrada")
+        self.assertNotContains(response, cliente.nombre_completo)
+        self.assertEqual(response.cookies[self.COOKIE]["max-age"], 0)
+
+    def test_confirmar_con_cookie_invalida_redirige_y_elimina_cookie(self):
+        self.client.cookies[self.COOKIE] = "valor-invalido"
+        response = self.client.post(reverse("gestion:checkin_confirmar"))
+        self.assertRedirects(response, reverse("gestion:checkin"))
+        self.assertEqual(response.cookies[self.COOKIE]["max-age"], 0)
+        self.assertEqual(Asistencia.objects.count(), 0)
+
+    def test_atributos_cookie_recordarme(self):
+        cliente = self._crear_cliente()
+        response = self._checkin_con_recordarme(cliente, recordarme=True)
+        cookie = response.cookies[self.COOKIE]
+        self.assertEqual(cookie["max-age"], 60 * 60 * 24 * 180)
+        self.assertTrue(cookie["httponly"])
+        self.assertEqual(cookie["samesite"], "Lax")
+
+
+class AutenticacionTests(TestCase):
+    CREDENCIALES = {"username": "encargado", "password": "clave-super-12345"}
+
+    def _crear_usuario(self):
+        return User.objects.create_user(**self.CREDENCIALES)
+
+    def test_get_login(self):
+        response = self.client.get(reverse("login"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Iniciar sesión")
+
+    def test_login_credenciales_validas(self):
+        self._crear_usuario()
+        response = self.client.post(reverse("login"), self.CREDENCIALES)
+        self.assertRedirects(response, reverse("gestion:inicio"))
+
+    def test_login_credenciales_invalidas(self):
+        self._crear_usuario()
+        response = self.client.post(
+            reverse("login"), {"username": "encargado", "password": "incorrecta"}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["form"].errors)
+
+    def test_login_respeta_next(self):
+        self._crear_usuario()
+        destino = reverse("gestion:cliente_lista")
+        response = self.client.post(reverse("login"), {**self.CREDENCIALES, "next": destino})
+        self.assertRedirects(response, destino)
+
+    def test_logout_por_post(self):
+        usuario = self._crear_usuario()
+        self.client.force_login(usuario)
+        response = self.client.post(reverse("logout"))
+        self.assertRedirects(response, reverse("login"))
+
+        response = self.client.get(reverse("gestion:inicio"))
+        self.assertEqual(response.status_code, 302)
+
+    def test_logout_rechaza_get(self):
+        usuario = self._crear_usuario()
+        self.client.force_login(usuario)
+        response = self.client.get(reverse("logout"))
+        self.assertEqual(response.status_code, 405)
+
+    def test_pantalla_interna_redirige_sin_autenticacion(self):
+        response = self.client.get(reverse("gestion:cliente_lista"))
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.url.startswith(reverse("login")))
+
+    def test_pantalla_interna_funciona_autenticado(self):
+        usuario = self._crear_usuario()
+        self.client.force_login(usuario)
+        response = self.client.get(reverse("gestion:cliente_lista"))
+        self.assertEqual(response.status_code, 200)
+
+    def test_checkin_sigue_publico(self):
+        response = self.client.get(reverse("gestion:checkin"))
+        self.assertEqual(response.status_code, 200)
+
+    def test_navegacion_cambia_segun_autenticacion(self):
+        response = self.client.get(reverse("gestion:checkin"))
+        self.assertNotContains(response, "Cerrar sesión")
+        self.assertNotContains(response, reverse("gestion:cliente_lista"))
+
+        usuario = self._crear_usuario()
+        self.client.force_login(usuario)
+        response = self.client.get(reverse("gestion:inicio"))
+        self.assertContains(response, "Cerrar sesión")
+        self.assertContains(response, "encargado")
+
+
+class AsistenciaListaVistaTests(TestCase):
+    def setUp(self):
+        self.usuario = User.objects.create_user(username="encargado", password="clave-super-12345")
+        self.client.force_login(self.usuario)
+
+    def _crear_cliente(self, **kwargs):
+        defaults = {
+            "nombre_completo": "Cliente de prueba",
+            "dia_pago": DiaPago.DIA_1,
+            "tipo_tarifa": TipoTarifa.GENERAL,
+        }
+        defaults.update(kwargs)
+        return Cliente.objects.create(**defaults)
+
+    def test_requiere_login_redirige_sin_sesion(self):
+        self.client.logout()
+        response = self.client.get(reverse("gestion:asistencia_lista"))
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.url.startswith(reverse("login")))
+
+    def test_acceso_autenticado(self):
+        response = self.client.get(reverse("gestion:asistencia_lista"))
+        self.assertEqual(response.status_code, 200)
+
+    def test_orden_descendente(self):
+        cliente = self._crear_cliente()
+        primera = Asistencia.objects.create(
+            cliente=cliente,
+            fecha_hora=timezone.make_aware(datetime(2026, 1, 1, 8, 0)),
+            estado_membresia=membresia.ESTADO_SIN_PAGOS,
+        )
+        segunda = Asistencia.objects.create(
+            cliente=cliente,
+            fecha_hora=timezone.make_aware(datetime(2026, 1, 1, 9, 0)),
+            estado_membresia=membresia.ESTADO_SIN_PAGOS,
+        )
+        response = self.client.get(reverse("gestion:asistencia_lista"))
+        self.assertEqual(list(response.context["asistencias"]), [segunda, primera])
+
+    def test_datos_historicos_no_se_recalculan(self):
+        cliente = self._crear_cliente()
+        Asistencia.objects.create(
+            cliente=cliente,
+            fecha_hora=timezone.now(),
+            estado_membresia=membresia.ESTADO_VENCIDA_CON_MORA,
+            fecha_vencimiento=date(2020, 1, 1),
+            mora_al_ingresar=Decimal("150"),
+            origen=OrigenAsistencia.MANUAL,
+        )
+        response = self.client.get(reverse("gestion:asistencia_lista"))
+        self.assertContains(response, "150")
+        self.assertContains(response, "01/01/2020")
+        self.assertContains(response, "Vencida con mora")
+
+    def test_busqueda_por_nombre(self):
+        cliente_a = self._crear_cliente(nombre_completo="Ana Pérez")
+        cliente_b = self._crear_cliente(nombre_completo="Beto Gómez")
+        Asistencia.objects.create(cliente=cliente_a, estado_membresia=membresia.ESTADO_SIN_PAGOS)
+        Asistencia.objects.create(cliente=cliente_b, estado_membresia=membresia.ESTADO_SIN_PAGOS)
+        response = self.client.get(reverse("gestion:asistencia_lista"), {"q": "Ana"})
+        self.assertContains(response, "Ana Pérez")
+        self.assertNotContains(response, "Beto Gómez")
+
+    def test_busqueda_por_id_acceso(self):
+        cliente_a = self._crear_cliente(nombre_completo="Ana Pérez")
+        cliente_b = self._crear_cliente(nombre_completo="Beto Gómez")
+        Asistencia.objects.create(cliente=cliente_a, estado_membresia=membresia.ESTADO_SIN_PAGOS)
+        Asistencia.objects.create(cliente=cliente_b, estado_membresia=membresia.ESTADO_SIN_PAGOS)
+        response = self.client.get(reverse("gestion:asistencia_lista"), {"q": str(cliente_a.id_acceso)})
+        self.assertContains(response, "Ana Pérez")
+        self.assertNotContains(response, "Beto Gómez")
+
+    def test_filtro_por_fecha(self):
+        cliente = self._crear_cliente()
+        hoy = timezone.localdate()
+        ayer = hoy - timedelta(days=1)
+        asistencia_hoy = Asistencia.objects.create(
+            cliente=cliente, fecha_hora=timezone.now(), estado_membresia=membresia.ESTADO_SIN_PAGOS
+        )
+        asistencia_ayer = Asistencia.objects.create(
+            cliente=cliente,
+            fecha_hora=timezone.make_aware(datetime(ayer.year, ayer.month, ayer.day, 10, 0)),
+            estado_membresia=membresia.ESTADO_SIN_PAGOS,
+        )
+        response = self.client.get(reverse("gestion:asistencia_lista"), {"fecha": ayer.isoformat()})
+        self.assertEqual(list(response.context["asistencias"]), [asistencia_ayer])
+
+    def test_fecha_invalida_no_produce_error(self):
+        cliente = self._crear_cliente()
+        Asistencia.objects.create(cliente=cliente, estado_membresia=membresia.ESTADO_SIN_PAGOS)
+        response = self.client.get(reverse("gestion:asistencia_lista"), {"fecha": "no-es-una-fecha"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Fecha no válida")
+        self.assertEqual(len(response.context["asistencias"]), 1)
+
+    def test_contador_de_hoy(self):
+        cliente = self._crear_cliente()
+        hoy = timezone.localdate()
+        ayer = hoy - timedelta(days=1)
+        Asistencia.objects.create(cliente=cliente, fecha_hora=timezone.now(), estado_membresia=membresia.ESTADO_SIN_PAGOS)
+        Asistencia.objects.create(cliente=cliente, fecha_hora=timezone.now(), estado_membresia=membresia.ESTADO_SIN_PAGOS)
+        Asistencia.objects.create(
+            cliente=cliente,
+            fecha_hora=timezone.make_aware(datetime(ayer.year, ayer.month, ayer.day, 10, 0)),
+            estado_membresia=membresia.ESTADO_SIN_PAGOS,
+        )
+        response = self.client.get(reverse("gestion:asistencia_lista"))
+        self.assertEqual(response.context["total_hoy"], 2)
+
+    def test_paginacion_20_por_pagina(self):
+        cliente = self._crear_cliente()
+        for i in range(25):
+            Asistencia.objects.create(
+                cliente=cliente,
+                fecha_hora=timezone.make_aware(datetime(2026, 1, 1, 8, 0)) + timedelta(minutes=i * 10),
+                estado_membresia=membresia.ESTADO_SIN_PAGOS,
+            )
+        response = self.client.get(reverse("gestion:asistencia_lista"))
+        self.assertEqual(len(response.context["asistencias"]), 20)
+        self.assertTrue(response.context["asistencias"].has_next())
+
+    def test_filtros_se_preservan_en_paginacion(self):
+        cliente = self._crear_cliente(nombre_completo="Ana Pérez")
+        for i in range(25):
+            Asistencia.objects.create(
+                cliente=cliente,
+                fecha_hora=timezone.make_aware(datetime(2026, 1, 1, 8, 0)) + timedelta(minutes=i * 10),
+                estado_membresia=membresia.ESTADO_SIN_PAGOS,
+            )
+        response = self.client.get(reverse("gestion:asistencia_lista"), {"q": "Ana"})
+        self.assertContains(response, "q=Ana")
+        self.assertContains(response, "page=2")
+        self.assertNotContains(response, "?&page=2")
+
+    def test_enlace_a_detalle_cliente(self):
+        cliente = self._crear_cliente()
+        Asistencia.objects.create(cliente=cliente, estado_membresia=membresia.ESTADO_SIN_PAGOS)
+        response = self.client.get(reverse("gestion:asistencia_lista"))
+        self.assertContains(response, reverse("gestion:cliente_detalle", args=[cliente.id_acceso]))
+
+    def test_estado_vacio_sin_asistencias(self):
+        response = self.client.get(reverse("gestion:asistencia_lista"))
+        self.assertContains(response, "No se encontraron asistencias")
+
+    def test_enlace_asistencias_no_visible_para_anonimo(self):
+        self.client.logout()
+        response = self.client.get(reverse("gestion:checkin"))
+        self.assertNotContains(response, reverse("gestion:asistencia_lista"))

@@ -27,6 +27,20 @@ class DiaPago(models.IntegerChoices):
     DIA_15 = 15, "Día 15"
 
 
+class OrigenAsistencia(models.TextChoices):
+    CLIENTE = "cliente", "Cliente"
+    MANUAL = "manual", "Manual"
+
+
+ESTADO_MEMBRESIA_CHOICES = [
+    (membresia.ESTADO_VIGENTE, "Vigente"),
+    (membresia.ESTADO_POR_VENCER, "Por vencer"),
+    (membresia.ESTADO_EN_GRACIA, "En gracia"),
+    (membresia.ESTADO_VENCIDA_CON_MORA, "Vencida con mora"),
+    (membresia.ESTADO_SIN_PAGOS, "Sin pagos"),
+]
+
+
 def validar_reajuste_inicial(value):
     if value not in membresia.REAJUSTES_VALIDOS:
         raise ValidationError(f"El reajuste inicial debe ser uno de: {membresia.REAJUSTES_VALIDOS}.")
@@ -155,6 +169,9 @@ class Cliente(models.Model):
         self.reajuste_inicial_aplicado = self.pagos.exists()
         self.save(update_fields=["inscripcion_aplicada", "reajuste_inicial_aplicado"])
 
+    def ultima_asistencia(self):
+        return self.asistencias.first()
+
 
 class Pago(models.Model):
     cliente = models.ForeignKey(Cliente, on_delete=models.PROTECT, related_name="pagos")
@@ -230,3 +247,37 @@ class Pago(models.Model):
             self.mensualidad_base + self.inscripcion + self.reajuste_inicial + self.mora + self.otros_ajustes
         )
         super().save(*args, **kwargs)
+
+
+class Asistencia(models.Model):
+    cliente = models.ForeignKey(Cliente, on_delete=models.PROTECT, related_name="asistencias")
+    fecha_hora = models.DateTimeField(default=timezone.now, editable=False)
+    estado_membresia = models.CharField(max_length=20, choices=ESTADO_MEMBRESIA_CHOICES)
+    fecha_vencimiento = models.DateField(null=True, blank=True)
+    mora_al_ingresar = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        default=Decimal("0"),
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    origen = models.CharField(max_length=10, choices=OrigenAsistencia.choices, default=OrigenAsistencia.CLIENTE)
+
+    class Meta:
+        ordering = ["-fecha_hora"]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(mora_al_ingresar__gte=Decimal("0")),
+                name="asistencia_mora_no_negativa",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(estado_membresia__in=[valor for valor, _ in ESTADO_MEMBRESIA_CHOICES]),
+                name="asistencia_estado_membresia_valido",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(origen__in=OrigenAsistencia.values),
+                name="asistencia_origen_valido",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Asistencia de {self.cliente} — {self.fecha_hora:%d/%m/%Y %H:%M}"

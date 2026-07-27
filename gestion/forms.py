@@ -1,8 +1,37 @@
 from decimal import Decimal
 
 from django import forms
+from django.core.validators import RegexValidator
 
 from .models import Cliente, Pago
+
+ID_ACCESO_VALIDATOR = RegexValidator(r"^\d{4}$", "Ingresa un ID de 4 dígitos.")
+
+
+class CheckinForm(forms.Form):
+    id_acceso = forms.CharField(
+        label="Tu ID de acceso",
+        validators=[ID_ACCESO_VALIDATOR],
+        widget=forms.TextInput(
+            attrs={
+                "class": "form-control form-control-lg text-center checkin-id-input",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{4}",
+                "autocomplete": "off",
+                "maxlength": "4",
+                "placeholder": "0000",
+                "autofocus": True,
+            }
+        ),
+    )
+    recordarme = forms.BooleanField(
+        required=False,
+        label="Recordarme en este dispositivo",
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input"}),
+    )
+
+    def clean_id_acceso(self):
+        return int(self.cleaned_data["id_acceso"])
 
 
 class ClienteForm(forms.ModelForm):

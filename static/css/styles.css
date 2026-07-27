@@ -198,3 +198,31 @@ body {
 .acciones-pago .btn-link {
     text-decoration: none;
 }
+
+/* Check-in público */
+.checkin-card {
+    max-width: 420px;
+}
+
+.checkin-id-input {
+    font-size: 2rem;
+    letter-spacing: 0.5rem;
+    font-weight: 700;
+}
+
+/* Login del panel interno (AuthenticationForm no admite widgets personalizados) */
+.login-card {
+    max-width: 380px;
+}
+
+.login-card input[type="text"],
+.login-card input[type="password"] {
+    display: block;
+    width: 100%;
+    padding: 0.375rem 0.75rem;
+    font-size: 1rem;
+    border: 1px solid var(--color-border);
+    border-radius: 0.375rem;
+    background-color: var(--color-card);
+    color: var(--color-text);
+}
