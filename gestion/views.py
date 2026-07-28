@@ -12,13 +12,24 @@ from django.views.decorators.http import require_POST
 
 from . import asistencias, membresia
 from .forms import CheckinForm, ClienteForm, PagoForm
-from .models import Asistencia, Cliente, OrigenAsistencia, Pago
+from .membresia_masiva import calcular_estados_membresia, contar_por_estado
+from .models import Asistencia, Cliente, ESTADO_MEMBRESIA_CHOICES, OrigenAsistencia, Pago
 
 COOKIE_CLIENTE_RECORDADO = "gym_cliente_recordado"
 COOKIE_CLIENTE_RECORDADO_SALT = "gestion.checkin.cliente_recordado"
 COOKIE_CLIENTE_RECORDADO_MAX_AGE = 60 * 60 * 24 * 180  # 180 días
 
 ASISTENCIAS_POR_PAGINA = 20
+MEMBRESIAS_POR_PAGINA = 20
+
+_PRIORIDAD_ESTADO = {
+    membresia.ESTADO_VENCIDA_CON_MORA: 0,
+    membresia.ESTADO_EN_GRACIA: 1,
+    membresia.ESTADO_POR_VENCER: 2,
+    membresia.ESTADO_SIN_PAGOS: 3,
+    membresia.ESTADO_VIGENTE: 4,
+}
+_ESTADOS_VALIDOS = set(_PRIORIDAD_ESTADO)
 
 
 @login_required
@@ -381,6 +392,58 @@ def asistencia_lista(request):
             "fecha": fecha_str,
             "fecha_valida": fecha_valida,
             "total_hoy": total_hoy,
+            "querystring": querystring.urlencode(),
+        },
+    )
+
+
+@login_required
+def membresia_lista(request):
+    hoy = timezone.localdate()
+    q = request.GET.get("q", "").strip()
+    estado_seleccionado = request.GET.get("estado", "").strip()
+    if estado_seleccionado not in _ESTADOS_VALIDOS:
+        estado_seleccionado = ""
+
+    clientes_activos = Cliente.objects.filter(activo=True)
+
+    if q:
+        filtro = Q(nombre_completo__icontains=q)
+        if q.isdigit():
+            filtro |= Q(id_acceso=int(q))
+        clientes_busqueda = clientes_activos.filter(filtro)
+        conteos = contar_por_estado(
+            calcular_estados_membresia(queryset=clientes_activos, fecha_referencia=hoy)
+        )
+        resultados = calcular_estados_membresia(queryset=clientes_busqueda, fecha_referencia=hoy)
+    else:
+        resultados = calcular_estados_membresia(queryset=clientes_activos, fecha_referencia=hoy)
+        conteos = contar_por_estado(resultados)
+
+    if estado_seleccionado:
+        resultados = [resultado for resultado in resultados if resultado.estado == estado_seleccionado]
+
+    resultados.sort(key=lambda r: (_PRIORIDAD_ESTADO[r.estado], r.cliente.nombre_completo.lower()))
+
+    paginator = Paginator(resultados, MEMBRESIAS_POR_PAGINA)
+    page_obj = paginator.get_page(request.GET.get("page"))
+
+    querystring = request.GET.copy()
+    querystring.pop("page", None)
+
+    conteos_por_estado = [
+        (valor, etiqueta, conteos.get(valor, 0)) for valor, etiqueta in ESTADO_MEMBRESIA_CHOICES
+    ]
+
+    return render(
+        request,
+        "gestion/membresias/lista.html",
+        {
+            "page_obj": page_obj,
+            "conteos": conteos,
+            "conteos_por_estado": conteos_por_estado,
+            "q": q,
+            "estado_seleccionado": estado_seleccionado,
             "querystring": querystring.urlencode(),
         },
     )

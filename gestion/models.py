@@ -12,6 +12,8 @@ ID_ACCESO_MIN = 1000
 ID_ACCESO_MAX = 9999
 ID_ACCESO_MAX_INTENTOS = 100
 
+_SIN_PRECARGAR = object()
+
 
 class IdAccesoNoDisponibleError(Exception):
     """No fue posible generar un id_acceso disponible tras agotar los intentos permitidos."""
@@ -52,7 +54,19 @@ def validar_inscripcion(value):
         raise ValidationError(f"La inscripción debe ser uno de: {valores_validos}.")
 
 
+class ClienteQuerySet(models.QuerySet):
+    def con_ultimo_periodo_fin(self):
+        """Anota cada cliente con el periodo_fin de su pago más reciente.
+
+        Evita una consulta por cliente al calcular estado/vencimiento/mora
+        de varios clientes a la vez (ver gestion/membresia_masiva.py).
+        """
+        return self.annotate(ultimo_periodo_fin=models.Max("pagos__periodo_fin"))
+
+
 class Cliente(models.Model):
+    objects = ClienteQuerySet.as_manager()
+
     id_acceso = models.PositiveIntegerField(
         unique=True,
         validators=[MinValueValidator(ID_ACCESO_MIN), MaxValueValidator(ID_ACCESO_MAX)],
@@ -113,36 +127,39 @@ class Cliente(models.Model):
             return None
         return ultimo.periodo_inicio, ultimo.periodo_fin
 
-    def siguiente_periodo_pendiente(self):
-        ultimo_periodo = self.ultimo_periodo_pagado()
-        if ultimo_periodo is None:
+    def siguiente_periodo_pendiente(self, *, ultimo_periodo_fin=_SIN_PRECARGAR):
+        if ultimo_periodo_fin is _SIN_PRECARGAR:
+            ultimo_periodo = self.ultimo_periodo_pagado()
+            if ultimo_periodo is None:
+                return None
+            _inicio, ultimo_periodo_fin = ultimo_periodo
+        elif ultimo_periodo_fin is None:
             return None
-        _inicio, fin = ultimo_periodo
-        return membresia.siguiente_periodo(fin, self.dia_pago)
+        return membresia.siguiente_periodo(ultimo_periodo_fin, self.dia_pago)
 
-    def fecha_vencimiento_pendiente(self):
-        siguiente = self.siguiente_periodo_pendiente()
+    def fecha_vencimiento_pendiente(self, *, ultimo_periodo_fin=_SIN_PRECARGAR):
+        siguiente = self.siguiente_periodo_pendiente(ultimo_periodo_fin=ultimo_periodo_fin)
         if siguiente is None:
             return None
         inicio, _fin = siguiente
         return membresia.fecha_vencimiento(inicio)
 
-    def estado_actual(self, fecha_referencia=None):
-        vencimiento = self.fecha_vencimiento_pendiente()
+    def estado_actual(self, fecha_referencia=None, *, ultimo_periodo_fin=_SIN_PRECARGAR):
+        vencimiento = self.fecha_vencimiento_pendiente(ultimo_periodo_fin=ultimo_periodo_fin)
         if vencimiento is None:
             return membresia.ESTADO_SIN_PAGOS
         fecha_referencia = fecha_referencia or timezone.localdate()
         return membresia.calcular_estado(vencimiento, fecha_referencia)
 
-    def mora_actual(self, fecha_referencia=None):
-        vencimiento = self.fecha_vencimiento_pendiente()
+    def mora_actual(self, fecha_referencia=None, *, ultimo_periodo_fin=_SIN_PRECARGAR):
+        vencimiento = self.fecha_vencimiento_pendiente(ultimo_periodo_fin=ultimo_periodo_fin)
         if vencimiento is None:
             return Decimal("0")
         fecha_referencia = fecha_referencia or timezone.localdate()
         return membresia.calcular_mora(vencimiento, fecha_referencia)
 
-    def total_sugerido(self, fecha_referencia=None):
-        vencimiento = self.fecha_vencimiento_pendiente()
+    def total_sugerido(self, fecha_referencia=None, *, ultimo_periodo_fin=_SIN_PRECARGAR):
+        vencimiento = self.fecha_vencimiento_pendiente(ultimo_periodo_fin=ultimo_periodo_fin)
         if vencimiento is None:
             return None
         fecha_referencia = fecha_referencia or timezone.localdate()

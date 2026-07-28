@@ -4,13 +4,15 @@ from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
 from . import asistencias, membresia
 from .forms import ClienteForm
+from .membresia_masiva import calcular_estados_membresia, contar_por_estado
 from .models import Asistencia, Cliente, DiaPago, IdAccesoNoDisponibleError, OrigenAsistencia, Pago, TipoTarifa
 
 
@@ -1386,12 +1388,14 @@ class AutenticacionTests(TestCase):
         response = self.client.get(reverse("gestion:checkin"))
         self.assertNotContains(response, "Cerrar sesión")
         self.assertNotContains(response, reverse("gestion:cliente_lista"))
+        self.assertNotContains(response, reverse("gestion:membresia_lista"))
 
         usuario = self._crear_usuario()
         self.client.force_login(usuario)
         response = self.client.get(reverse("gestion:inicio"))
         self.assertContains(response, "Cerrar sesión")
         self.assertContains(response, "encargado")
+        self.assertContains(response, reverse("gestion:membresia_lista"))
 
 
 class AsistenciaListaVistaTests(TestCase):
@@ -1542,3 +1546,502 @@ class AsistenciaListaVistaTests(TestCase):
         self.client.logout()
         response = self.client.get(reverse("gestion:checkin"))
         self.assertNotContains(response, reverse("gestion:asistencia_lista"))
+
+
+class ClienteUltimoPeriodoFinPrecargadoTests(TestCase):
+    def _crear_cliente(self, **kwargs):
+        defaults = {
+            "nombre_completo": "Cliente de prueba",
+            "dia_pago": DiaPago.DIA_1,
+            "tipo_tarifa": TipoTarifa.GENERAL,
+        }
+        defaults.update(kwargs)
+        return Cliente.objects.create(**defaults)
+
+    def _crear_pago(self, cliente, periodo_inicio, periodo_fin):
+        return Pago.objects.create(
+            cliente=cliente,
+            fecha_pago=periodo_inicio,
+            mensualidad_base=Decimal("330"),
+            periodo_inicio=periodo_inicio,
+            periodo_fin=periodo_fin,
+        )
+
+    def test_ultimo_periodo_fin_es_keyword_only(self):
+        cliente = self._crear_cliente()
+        metodos_con_dos_posicionales = [
+            lambda: cliente.estado_actual(None, date(2026, 1, 31)),
+            lambda: cliente.mora_actual(None, date(2026, 1, 31)),
+            lambda: cliente.total_sugerido(None, date(2026, 1, 31)),
+        ]
+        for llamada in metodos_con_dos_posicionales:
+            with self.subTest(llamada=llamada):
+                with self.assertRaises(TypeError):
+                    llamada()
+        with self.assertRaises(TypeError):
+            cliente.siguiente_periodo_pendiente(date(2026, 1, 31))
+        with self.assertRaises(TypeError):
+            cliente.fecha_vencimiento_pendiente(date(2026, 1, 31))
+
+    def test_sin_pagos_con_ultimo_periodo_fin_none_no_consulta_pagos(self):
+        cliente = self._crear_cliente()
+        with self.assertNumQueries(0):
+            self.assertIsNone(cliente.siguiente_periodo_pendiente(ultimo_periodo_fin=None))
+            self.assertIsNone(cliente.fecha_vencimiento_pendiente(ultimo_periodo_fin=None))
+            self.assertEqual(cliente.estado_actual(ultimo_periodo_fin=None), membresia.ESTADO_SIN_PAGOS)
+            self.assertEqual(cliente.mora_actual(ultimo_periodo_fin=None), Decimal("0"))
+            self.assertIsNone(cliente.total_sugerido(ultimo_periodo_fin=None))
+
+    def test_con_pagos_ultimo_periodo_fin_precargado_no_consulta_pagos(self):
+        cliente = self._crear_cliente(dia_pago=DiaPago.DIA_1)
+        self._crear_pago(cliente, date(2026, 1, 1), date(2026, 1, 31))
+        with self.assertNumQueries(0):
+            vencimiento = cliente.fecha_vencimiento_pendiente(ultimo_periodo_fin=date(2026, 1, 31))
+            estado = cliente.estado_actual(date(2026, 2, 5), ultimo_periodo_fin=date(2026, 1, 31))
+            mora = cliente.mora_actual(date(2026, 2, 5), ultimo_periodo_fin=date(2026, 1, 31))
+        self.assertEqual(vencimiento, date(2026, 2, 1))
+        self.assertEqual(estado, membresia.ESTADO_VENCIDA_CON_MORA)
+        self.assertEqual(mora, Decimal("10"))
+
+    def test_resultado_equivalente_entre_calculo_tradicional_y_precargado(self):
+        cliente = self._crear_cliente(dia_pago=DiaPago.DIA_1)
+        self._crear_pago(cliente, date(2026, 1, 1), date(2026, 1, 31))
+        fecha_referencia = date(2026, 2, 5)
+        ultimo_periodo_fin = cliente.ultimo_pago().periodo_fin
+
+        self.assertEqual(
+            cliente.estado_actual(fecha_referencia),
+            cliente.estado_actual(fecha_referencia, ultimo_periodo_fin=ultimo_periodo_fin),
+        )
+        self.assertEqual(
+            cliente.fecha_vencimiento_pendiente(),
+            cliente.fecha_vencimiento_pendiente(ultimo_periodo_fin=ultimo_periodo_fin),
+        )
+        self.assertEqual(
+            cliente.mora_actual(fecha_referencia),
+            cliente.mora_actual(fecha_referencia, ultimo_periodo_fin=ultimo_periodo_fin),
+        )
+        self.assertEqual(
+            cliente.total_sugerido(fecha_referencia),
+            cliente.total_sugerido(fecha_referencia, ultimo_periodo_fin=ultimo_periodo_fin),
+        )
+
+    def test_metodos_sin_parametro_conservan_comportamiento_actual(self):
+        cliente = self._crear_cliente(dia_pago=DiaPago.DIA_1)
+        self._crear_pago(cliente, date(2026, 1, 1), date(2026, 1, 31))
+        # Sin ultimo_periodo_fin, cada llamada sigue consultando pagos, como hoy.
+        with self.assertNumQueries(1):
+            vencimiento = cliente.fecha_vencimiento_pendiente()
+        self.assertEqual(vencimiento, date(2026, 2, 1))
+        self.assertEqual(cliente.estado_actual(date(2026, 1, 20)), membresia.ESTADO_VIGENTE)
+
+
+class MembresiaMasivaTests(TestCase):
+    def _crear_cliente(self, **kwargs):
+        defaults = {
+            "nombre_completo": "Cliente de prueba",
+            "dia_pago": DiaPago.DIA_1,
+            "tipo_tarifa": TipoTarifa.GENERAL,
+        }
+        defaults.update(kwargs)
+        return Cliente.objects.create(**defaults)
+
+    def _crear_pago(self, cliente, periodo_inicio, periodo_fin):
+        return Pago.objects.create(
+            cliente=cliente,
+            fecha_pago=periodo_inicio,
+            mensualidad_base=Decimal("330"),
+            periodo_inicio=periodo_inicio,
+            periodo_fin=periodo_fin,
+        )
+
+    def test_cliente_sin_pagos(self):
+        cliente = self._crear_cliente()
+        resultados = calcular_estados_membresia(
+            queryset=Cliente.objects.filter(pk=cliente.pk), fecha_referencia=date(2026, 2, 5)
+        )
+        self.assertEqual(len(resultados), 1)
+        resultado = resultados[0]
+        self.assertEqual(resultado.cliente.pk, cliente.pk)
+        self.assertEqual(resultado.estado, membresia.ESTADO_SIN_PAGOS)
+        self.assertIsNone(resultado.fecha_vencimiento)
+        self.assertEqual(resultado.mora, Decimal("0"))
+
+    def test_cliente_con_pagos_calcula_vencimiento_y_mora(self):
+        cliente = self._crear_cliente(dia_pago=DiaPago.DIA_1)
+        self._crear_pago(cliente, date(2026, 1, 1), date(2026, 1, 31))
+        resultados = calcular_estados_membresia(
+            queryset=Cliente.objects.filter(pk=cliente.pk), fecha_referencia=date(2026, 2, 5)
+        )
+        resultado = resultados[0]
+        self.assertEqual(resultado.fecha_vencimiento, date(2026, 2, 1))
+        self.assertEqual(resultado.mora, Decimal("10"))
+        self.assertEqual(resultado.estado, membresia.ESTADO_VENCIDA_CON_MORA)
+
+    def test_los_cinco_estados_posibles(self):
+        cliente_sin_pagos = self._crear_cliente(nombre_completo="Sin pagos")
+        resultado_sin_pagos = calcular_estados_membresia(
+            queryset=Cliente.objects.filter(pk=cliente_sin_pagos.pk), fecha_referencia=date(2026, 2, 5)
+        )[0]
+        self.assertEqual(resultado_sin_pagos.estado, membresia.ESTADO_SIN_PAGOS)
+
+        # Vencimiento fijo en 2026-02-01 (periodo_fin=2026-01-31, dia_pago=1);
+        # solo cambia la fecha de referencia, igual que en
+        # MembresiaFuncionesTests.test_estados_membresia_limites.
+        cliente = self._crear_cliente(nombre_completo="Con pagos", dia_pago=DiaPago.DIA_1)
+        self._crear_pago(cliente, date(2026, 1, 1), date(2026, 1, 31))
+        queryset = Cliente.objects.filter(pk=cliente.pk)
+
+        casos = [
+            (date(2026, 1, 20), membresia.ESTADO_VIGENTE),
+            (date(2026, 1, 29), membresia.ESTADO_POR_VENCER),
+            (date(2026, 2, 1), membresia.ESTADO_POR_VENCER),
+            (date(2026, 2, 2), membresia.ESTADO_EN_GRACIA),
+            (date(2026, 2, 4), membresia.ESTADO_EN_GRACIA),
+            (date(2026, 2, 5), membresia.ESTADO_VENCIDA_CON_MORA),
+        ]
+        for fecha_referencia, estado_esperado in casos:
+            with self.subTest(fecha_referencia=fecha_referencia):
+                resultado = calcular_estados_membresia(queryset=queryset, fecha_referencia=fecha_referencia)[0]
+                self.assertEqual(resultado.estado, estado_esperado)
+
+    def test_queryset_none_usa_clientes_activos_por_defecto(self):
+        activo = self._crear_cliente(nombre_completo="Activo", activo=True)
+        inactivo = self._crear_cliente(nombre_completo="Inactivo", activo=False)
+        resultados = calcular_estados_membresia(fecha_referencia=date(2026, 2, 5))
+        pks = {resultado.cliente.pk for resultado in resultados}
+        self.assertIn(activo.pk, pks)
+        self.assertNotIn(inactivo.pk, pks)
+
+    def test_acepta_otro_queryset_de_cliente(self):
+        uno = self._crear_cliente(nombre_completo="Uno")
+        self._crear_cliente(nombre_completo="Dos")
+        resultados = calcular_estados_membresia(
+            queryset=Cliente.objects.filter(nombre_completo="Uno"), fecha_referencia=date(2026, 2, 5)
+        )
+        self.assertEqual([r.cliente.pk for r in resultados], [uno.pk])
+
+    def test_contar_por_estado(self):
+        self._crear_cliente(nombre_completo="Sin pagos")
+        for i in range(2):
+            cliente = self._crear_cliente(nombre_completo=f"Con mora {i}", dia_pago=DiaPago.DIA_1)
+            self._crear_pago(cliente, date(2026, 1, 1), date(2026, 1, 31))
+
+        resultados = calcular_estados_membresia(fecha_referencia=date(2026, 2, 5))
+        conteo = contar_por_estado(resultados)
+        self.assertEqual(conteo[membresia.ESTADO_SIN_PAGOS], 1)
+        self.assertEqual(conteo[membresia.ESTADO_VENCIDA_CON_MORA], 2)
+
+    def test_una_sola_consulta_para_varios_clientes_sin_queries_adicionales(self):
+        for i in range(6):
+            cliente = self._crear_cliente(nombre_completo=f"Cliente {i}", dia_pago=DiaPago.DIA_1)
+            if i % 2 == 0:
+                self._crear_pago(cliente, date(2026, 1, 1), date(2026, 1, 31))
+
+        with self.assertNumQueries(1):
+            resultados = calcular_estados_membresia(fecha_referencia=date(2026, 2, 5))
+            # Acceder a los campos ya calculados no debe disparar queries nuevas.
+            for resultado in resultados:
+                resultado.estado
+                resultado.fecha_vencimiento
+                resultado.mora
+
+        self.assertEqual(len(resultados), 6)
+
+
+class MembresiaListaVistaTests(TestCase):
+    def setUp(self):
+        self.usuario = User.objects.create_user(username="encargado", password="clave-super-12345")
+        self.url = reverse("gestion:membresia_lista")
+
+    def _crear_cliente(self, **kwargs):
+        defaults = {
+            "nombre_completo": "Cliente de prueba",
+            "dia_pago": DiaPago.DIA_1,
+            "tipo_tarifa": TipoTarifa.GENERAL,
+        }
+        defaults.update(kwargs)
+        return Cliente.objects.create(**defaults)
+
+    def _crear_pago(self, cliente, periodo_inicio, periodo_fin):
+        return Pago.objects.create(
+            cliente=cliente,
+            fecha_pago=periodo_inicio,
+            mensualidad_base=Decimal("330"),
+            periodo_inicio=periodo_inicio,
+            periodo_fin=periodo_fin,
+        )
+
+    def test_requiere_login(self):
+        response = self.client.get(self.url)
+        self.assertRedirects(response, f"{reverse('login')}?next={self.url}")
+
+    @patch("gestion.views.timezone.localdate")
+    def test_solo_incluye_clientes_activos(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+        activo = self._crear_cliente(nombre_completo="Activo Uno", activo=True)
+        self._crear_cliente(nombre_completo="Inactivo Uno", activo=False)
+
+        response = self.client.get(self.url)
+        pks = {resultado.cliente.pk for resultado in response.context["page_obj"]}
+        self.assertEqual(pks, {activo.pk})
+        self.assertEqual(sum(response.context["conteos"].values()), 1)
+
+    @patch("gestion.views.timezone.localdate")
+    def test_busqueda_por_nombre(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+        self._crear_cliente(nombre_completo="Ana Torres")
+        self._crear_cliente(nombre_completo="Luis Ramírez")
+
+        response = self.client.get(self.url, {"q": "Ana"})
+        nombres = {resultado.cliente.nombre_completo for resultado in response.context["page_obj"]}
+        self.assertEqual(nombres, {"Ana Torres"})
+
+    @patch("gestion.views.timezone.localdate")
+    def test_busqueda_por_id_acceso(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+        objetivo = self._crear_cliente(nombre_completo="Ana Torres")
+        self._crear_cliente(nombre_completo="Luis Ramírez")
+
+        response = self.client.get(self.url, {"q": str(objetivo.id_acceso)})
+        pks = {resultado.cliente.pk for resultado in response.context["page_obj"]}
+        self.assertEqual(pks, {objetivo.pk})
+
+    @patch("gestion.views.timezone.localdate")
+    def test_busqueda_no_afecta_los_conteos_globales(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+        self._crear_cliente(nombre_completo="Ana Torres")
+        self._crear_cliente(nombre_completo="Luis Ramírez")
+
+        response = self.client.get(self.url, {"q": "Ana"})
+        self.assertEqual(sum(response.context["conteos"].values()), 2)
+
+    @patch("gestion.views.timezone.localdate")
+    def test_conteo_y_filtro_estado_sin_pagos(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+        objetivo = self._crear_cliente(nombre_completo="Sin Pagos")
+        vigente = self._crear_cliente(nombre_completo="Con Pagos", dia_pago=DiaPago.DIA_1)
+        self._crear_pago(vigente, date(2026, 2, 1), date(2026, 2, 28))
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.context["conteos"][membresia.ESTADO_SIN_PAGOS], 1)
+
+        response = self.client.get(self.url, {"estado": membresia.ESTADO_SIN_PAGOS})
+        pks = {resultado.cliente.pk for resultado in response.context["page_obj"]}
+        self.assertEqual(pks, {objetivo.pk})
+        self.assertEqual(response.context["estado_seleccionado"], membresia.ESTADO_SIN_PAGOS)
+
+    @patch("gestion.views.timezone.localdate")
+    def test_conteo_y_filtro_estado_vigente(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+        self._crear_cliente(nombre_completo="Sin Pagos")
+        objetivo = self._crear_cliente(nombre_completo="Vigente", dia_pago=DiaPago.DIA_1)
+        self._crear_pago(objetivo, date(2026, 2, 1), date(2026, 2, 28))
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.context["conteos"][membresia.ESTADO_VIGENTE], 1)
+
+        response = self.client.get(self.url, {"estado": membresia.ESTADO_VIGENTE})
+        pks = {resultado.cliente.pk for resultado in response.context["page_obj"]}
+        self.assertEqual(pks, {objetivo.pk})
+
+    @patch("gestion.views.timezone.localdate")
+    def test_conteo_y_filtro_estado_por_vencer(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 1)
+        self.client.force_login(self.usuario)
+        self._crear_cliente(nombre_completo="Sin Pagos")
+        objetivo = self._crear_cliente(nombre_completo="Por Vencer", dia_pago=DiaPago.DIA_1)
+        self._crear_pago(objetivo, date(2026, 1, 1), date(2026, 1, 31))
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.context["conteos"][membresia.ESTADO_POR_VENCER], 1)
+
+        response = self.client.get(self.url, {"estado": membresia.ESTADO_POR_VENCER})
+        pks = {resultado.cliente.pk for resultado in response.context["page_obj"]}
+        self.assertEqual(pks, {objetivo.pk})
+
+    @patch("gestion.views.timezone.localdate")
+    def test_conteo_y_filtro_estado_en_gracia(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 4)
+        self.client.force_login(self.usuario)
+        self._crear_cliente(nombre_completo="Sin Pagos")
+        objetivo = self._crear_cliente(nombre_completo="En Gracia", dia_pago=DiaPago.DIA_1)
+        self._crear_pago(objetivo, date(2026, 1, 1), date(2026, 1, 31))
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.context["conteos"][membresia.ESTADO_EN_GRACIA], 1)
+
+        response = self.client.get(self.url, {"estado": membresia.ESTADO_EN_GRACIA})
+        pks = {resultado.cliente.pk for resultado in response.context["page_obj"]}
+        self.assertEqual(pks, {objetivo.pk})
+
+    @patch("gestion.views.timezone.localdate")
+    def test_conteo_y_filtro_estado_vencida_con_mora(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+        self._crear_cliente(nombre_completo="Sin Pagos")
+        objetivo = self._crear_cliente(nombre_completo="Vencida", dia_pago=DiaPago.DIA_1)
+        self._crear_pago(objetivo, date(2026, 1, 1), date(2026, 1, 31))
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.context["conteos"][membresia.ESTADO_VENCIDA_CON_MORA], 1)
+
+        response = self.client.get(self.url, {"estado": membresia.ESTADO_VENCIDA_CON_MORA})
+        pks = {resultado.cliente.pk for resultado in response.context["page_obj"]}
+        self.assertEqual(pks, {objetivo.pk})
+
+    @patch("gestion.views.timezone.localdate")
+    def test_estado_invalido_se_trata_como_todos(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+        self._crear_cliente(nombre_completo="Sin Pagos")
+        vigente = self._crear_cliente(nombre_completo="Vigente", dia_pago=DiaPago.DIA_1)
+        self._crear_pago(vigente, date(2026, 2, 1), date(2026, 2, 28))
+
+        response = self.client.get(self.url, {"estado": "no_existe"})
+        self.assertEqual(response.context["estado_seleccionado"], "")
+        self.assertEqual(len(response.context["page_obj"].paginator.object_list), 2)
+
+    @patch("gestion.views.timezone.localdate")
+    def test_orden_por_prioridad_de_estado(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 4)
+        self.client.force_login(self.usuario)
+
+        sin_pagos = self._crear_cliente(nombre_completo="Zeta Sin Pagos")
+
+        vencida = self._crear_cliente(nombre_completo="Yolanda Vencida", dia_pago=DiaPago.DIA_1)
+        self._crear_pago(vencida, date(2025, 11, 1), date(2025, 11, 30))
+
+        gracia = self._crear_cliente(nombre_completo="Xavier Gracia", dia_pago=DiaPago.DIA_1)
+        self._crear_pago(gracia, date(2026, 1, 1), date(2026, 1, 31))
+
+        vigente = self._crear_cliente(nombre_completo="Wendy Vigente", dia_pago=DiaPago.DIA_1)
+        self._crear_pago(vigente, date(2026, 2, 1), date(2026, 2, 28))
+
+        response = self.client.get(self.url)
+        orden = [resultado.cliente.pk for resultado in response.context["page_obj"]]
+        self.assertEqual(orden, [vencida.pk, gracia.pk, sin_pagos.pk, vigente.pk])
+
+    @patch("gestion.views.timezone.localdate")
+    def test_orden_alfabetico_dentro_del_mismo_estado(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+        zoe = self._crear_cliente(nombre_completo="Zoe Sin Pagos")
+        ana = self._crear_cliente(nombre_completo="ana Sin Pagos")
+        beto = self._crear_cliente(nombre_completo="Beto Sin Pagos")
+
+        response = self.client.get(self.url)
+        orden = [resultado.cliente.pk for resultado in response.context["page_obj"]]
+        self.assertEqual(orden, [ana.pk, beto.pk, zoe.pk])
+
+    @patch("gestion.views.timezone.localdate")
+    def test_paginacion_20_por_pagina(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+        for i in range(25):
+            self._crear_cliente(nombre_completo=f"Cliente {i:02d}")
+
+        response = self.client.get(self.url)
+        self.assertEqual(len(response.context["page_obj"]), 20)
+        self.assertTrue(response.context["page_obj"].has_next())
+
+        response = self.client.get(self.url, {"page": 2})
+        self.assertEqual(len(response.context["page_obj"]), 5)
+
+    @patch("gestion.views.timezone.localdate")
+    def test_preserva_filtros_en_querystring(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+        for i in range(25):
+            self._crear_cliente(nombre_completo=f"Sin Pagos {i:02d}")
+
+        response = self.client.get(
+            self.url, {"q": "Sin Pagos", "estado": membresia.ESTADO_SIN_PAGOS, "page": 2}
+        )
+        querystring = response.context["querystring"]
+        self.assertIn("q=Sin+Pagos", querystring)
+        self.assertIn(f"estado={membresia.ESTADO_SIN_PAGOS}", querystring)
+        self.assertNotIn("page=", querystring)
+
+    @patch("gestion.views.timezone.localdate")
+    def test_cantidad_de_queries_no_crece_con_el_numero_de_clientes(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+
+        for i in range(3):
+            cliente = self._crear_cliente(nombre_completo=f"Pocos {i}", dia_pago=DiaPago.DIA_1)
+            self._crear_pago(cliente, date(2026, 1, 1), date(2026, 1, 31))
+        with CaptureQueriesContext(connection) as pocos:
+            self.client.get(self.url)
+
+        for i in range(30):
+            cliente = self._crear_cliente(nombre_completo=f"Muchos {i}", dia_pago=DiaPago.DIA_1)
+            self._crear_pago(cliente, date(2026, 1, 1), date(2026, 1, 31))
+        with CaptureQueriesContext(connection) as muchos:
+            self.client.get(self.url)
+
+        self.assertEqual(len(pocos.captured_queries), len(muchos.captured_queries))
+
+    @patch("gestion.views.timezone.localdate")
+    def test_una_sola_query_extra_con_busqueda_y_ninguna_sin_ella(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+        for i in range(5):
+            self._crear_cliente(nombre_completo=f"Cliente {i}")
+
+        with CaptureQueriesContext(connection) as sin_busqueda:
+            self.client.get(self.url)
+        with CaptureQueriesContext(connection) as con_busqueda:
+            self.client.get(self.url, {"q": "Cliente"})
+
+        self.assertEqual(len(con_busqueda.captured_queries), len(sin_busqueda.captured_queries) + 1)
+
+    @patch("gestion.views.timezone.localdate")
+    def test_acciones_ver_cliente_y_registrar_pago_presentes(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+        cliente = self._crear_cliente(nombre_completo="Ana Torres")
+
+        response = self.client.get(self.url)
+        self.assertContains(response, "Ver cliente")
+        self.assertContains(response, "Registrar pago")
+        self.assertContains(response, reverse("gestion:cliente_detalle", args=[cliente.id_acceso]))
+        self.assertContains(response, reverse("gestion:pago_registrar", args=[cliente.id_acceso]))
+
+    @patch("gestion.views.timezone.localdate")
+    def test_estado_vacio_sin_clientes_activos(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+
+        response = self.client.get(self.url)
+        self.assertContains(response, "No hay clientes activos registrados.")
+
+    @patch("gestion.views.timezone.localdate")
+    def test_estado_vacio_con_filtros_ofrece_limpiar(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+        self._crear_cliente(nombre_completo="Ana Torres")
+
+        response = self.client.get(self.url, {"q": "Nombre que no existe"})
+        self.assertContains(response, "No se encontraron clientes con esos filtros.")
+        self.assertContains(response, "Limpiar filtros")
+        self.assertContains(response, reverse("gestion:membresia_lista"))
+
+    @patch("gestion.views.timezone.localdate")
+    def test_filtros_seleccionados_se_conservan_en_el_formulario(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+        self.client.force_login(self.usuario)
+        self._crear_cliente(nombre_completo="Ana Torres")
+
+        response = self.client.get(self.url, {"q": "Ana", "estado": membresia.ESTADO_SIN_PAGOS})
+        self.assertContains(response, 'value="Ana"')
+        self.assertContains(
+            response,
+            f'<option value="{membresia.ESTADO_SIN_PAGOS}" selected>',
+        )

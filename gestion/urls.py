@@ -19,4 +19,5 @@ urlpatterns = [
     path("checkin/confirmar/", views.checkin_confirmar, name="checkin_confirmar"),
     path("checkin/olvidar/", views.checkin_olvidar, name="checkin_olvidar"),
     path("asistencias/", views.asistencia_lista, name="asistencia_lista"),
+    path("membresias/", views.membresia_lista, name="membresia_lista"),
 ]

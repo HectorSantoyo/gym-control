@@ -16,6 +16,7 @@
             <a class="navbar-brand" href="{% url 'gestion:inicio' %}">Gym Control</a>
             {% if user.is_authenticated %}
                 <a class="nav-link text-white" href="{% url 'gestion:cliente_lista' %}">Clientes</a>
+                <a class="nav-link text-white" href="{% url 'gestion:membresia_lista' %}">Membresías</a>
                 <a class="nav-link text-white" href="{% url 'gestion:asistencia_lista' %}">Asistencias</a>
                 <span class="navbar-text text-white ms-auto me-2">{{ user.username }}</span>
                 <form method="post" action="{% url 'logout' %}" class="d-inline">

@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+
+{% block title %}Membresías · Gym Control{% endblock %}
+
+{% block content %}
+<h1 class="h4 mb-3">Membresías</h1>
+
+<div class="resumen-membresias mb-4">
+    {% for valor, etiqueta, conteo in conteos_por_estado %}
+    <div class="resumen-membresias-item"
+         style="--color-item-accent: {% if valor == "vigente" %}var(--color-vigente){% elif valor == "vencida_con_mora" %}var(--color-vencida){% elif valor == "sin_pagos" %}var(--color-sin-pagos){% else %}var(--color-por-vencer){% endif %};">
+        <span class="resumen-membresias-numero">{{ conteo }}</span>
+        <span class="resumen-membresias-etiqueta">{{ etiqueta }}</span>
+    </div>
+    {% endfor %}
+</div>
+
+<form method="get" class="row g-2 mb-4 align-items-end">
+    <div class="col-12 col-sm-6 col-lg-4">
+        <label for="id_q" class="form-label small mb-1">Buscar</label>
+        <input type="search" id="id_q" name="q" value="{{ q }}" class="form-control" placeholder="Nombre o ID">
+    </div>
+    <div class="col-8 col-sm-4 col-lg-3">
+        <label for="id_estado" class="form-label small mb-1">Estado</label>
+        <select id="id_estado" name="estado" class="form-select">
+            <option value="">Todos</option>
+            {% for valor, etiqueta, _ in conteos_por_estado %}
+            <option value="{{ valor }}" {% if valor == estado_seleccionado %}selected{% endif %}>{{ etiqueta }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="col-4 col-sm-2 col-lg-2">
+        <button type="submit" class="btn btn-primary w-100">Filtrar</button>
+    </div>
+    {% if q or estado_seleccionado %}
+    <div class="col-12 col-lg-3">
+        <a href="{% url 'gestion:membresia_lista' %}" class="btn btn-outline-secondary w-100">Limpiar filtros</a>
+    </div>
+    {% endif %}
+</form>
+
+{% if page_obj %}
+<div class="list-group mb-3">
+    {% for resultado in page_obj %}
+    <div class="list-group-item d-flex align-items-center gap-3 flex-wrap">
+        {% if resultado.cliente.fotografia %}
+            <img src="{{ resultado.cliente.fotografia.url }}" alt="" class="foto-cliente">
+        {% else %}
+            <span class="foto-placeholder">{{ resultado.cliente.nombre_completo|first|upper }}</span>
+        {% endif %}
+
+        <div class="flex-grow-1">
+            <span class="d-block fw-semibold">{{ resultado.cliente.nombre_completo }}</span>
+            <span class="d-block text-body-secondary small">
+                ID {{ resultado.cliente.id_acceso }} · {{ resultado.cliente.get_tipo_tarifa_display }}
+            </span>
+            <span class="d-block text-body-secondary small">
+                Vencimiento: {{ resultado.fecha_vencimiento|date:"d/m/Y"|default:"—" }}
+                {% if resultado.mora > 0 %} · Mora: ${{ resultado.mora }}{% endif %}
+            </span>
+        </div>
+
+        {% if resultado.estado == "vigente" %}
+            <span class="badge badge-vigente">Vigente</span>
+        {% elif resultado.estado == "por_vencer" %}
+            <span class="badge badge-por-vencer">Por vencer</span>
+        {% elif resultado.estado == "en_gracia" %}
+            <span class="badge badge-en-gracia">En gracia</span>
+        {% elif resultado.estado == "vencida_con_mora" %}
+            <span class="badge badge-vencida">Vencida con mora</span>
+        {% else %}
+            <span class="badge badge-sin-pagos">Sin pagos</span>
+        {% endif %}
+
+        <div class="d-flex gap-2">
+            <a href="{% url 'gestion:cliente_detalle' resultado.cliente.id_acceso %}" class="btn btn-outline-primary btn-sm">Ver cliente</a>
+            <a href="{% url 'gestion:pago_registrar' resultado.cliente.id_acceso %}" class="btn btn-outline-secondary btn-sm">Registrar pago</a>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+{% if page_obj.has_other_pages %}
+<nav class="mt-3" aria-label="Paginación de membresías">
+    <ul class="pagination justify-content-center flex-wrap">
+        {% if page_obj.has_previous %}
+        <li class="page-item">
+            <a class="page-link" href="?{% if querystring %}{{ querystring }}&{% endif %}page={{ page_obj.previous_page_number }}">Anterior</a>
+        </li>
+        {% endif %}
+        <li class="page-item disabled">
+            <span class="page-link">Página {{ page_obj.number }} de {{ page_obj.paginator.num_pages }}</span>
+        </li>
+        {% if page_obj.has_next %}
+        <li class="page-item">
+            <a class="page-link" href="?{% if querystring %}{{ querystring }}&{% endif %}page={{ page_obj.next_page_number }}">Siguiente</a>
+        </li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+
+{% else %}
+<div class="text-center text-body-secondary py-4">
+    {% if q or estado_seleccionado %}
+        <p class="mb-2">No se encontraron clientes con esos filtros.</p>
+        <a href="{% url 'gestion:membresia_lista' %}" class="btn btn-outline-secondary btn-sm">Limpiar filtros</a>
+    {% else %}
+        <p class="mb-0">No hay clientes activos registrados.</p>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}
