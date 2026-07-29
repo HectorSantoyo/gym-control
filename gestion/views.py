@@ -1,6 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
@@ -34,7 +35,16 @@ _ESTADOS_VALIDOS = set(_PRIORIDAD_ESTADO)
 
 @login_required
 def inicio(request):
-    return render(request, "gestion/inicio.html")
+    hoy = timezone.localdate()
+    resultados = calcular_estados_membresia(fecha_referencia=hoy)
+    conteos = contar_por_estado(resultados)
+    contexto = {
+        "total_clientes_activos": len(resultados),
+        "membresias_vigentes": conteos.get(membresia.ESTADO_VIGENTE, 0),
+        "membresias_por_vencer": conteos.get(membresia.ESTADO_POR_VENCER, 0),
+        "asistencias_hoy": Asistencia.objects.filter(fecha_hora__date=hoy).count(),
+    }
+    return render(request, "gestion/inicio.html", contexto)
 
 
 @login_required
@@ -125,7 +135,7 @@ def pago_registrar(request, id_acceso):
         if form.is_valid():
             if es_primer_pago:
                 periodo_inicio = date.fromisoformat(form.cleaned_data["periodo_seleccionado"])
-                periodo_inicio, periodo_fin = membresia.calcular_periodo_natural(cliente.dia_pago, periodo_inicio)
+                periodo_inicio, periodo_fin = membresia.primer_periodo(cliente.dia_pago, periodo_inicio)
             else:
                 periodo_inicio, periodo_fin = periodo_pendiente
 
@@ -288,8 +298,7 @@ def _recordar_cliente(response, cliente):
         max_age=COOKIE_CLIENTE_RECORDADO_MAX_AGE,
         httponly=True,
         samesite="Lax",
-        # TODO: cambiar a secure=True en producción, cuando el sitio se sirva por HTTPS.
-        secure=False,
+        secure=not settings.DEBUG,
     )
 
 

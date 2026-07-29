@@ -1,0 +1,11 @@
+{% if estado == "vigente" %}
+    <span class="badge badge-vigente{% if clase_extra %} {{ clase_extra }}{% endif %}">Vigente</span>
+{% elif estado == "por_vencer" %}
+    <span class="badge badge-por-vencer{% if clase_extra %} {{ clase_extra }}{% endif %}">Por vencer</span>
+{% elif estado == "en_gracia" %}
+    <span class="badge badge-en-gracia{% if clase_extra %} {{ clase_extra }}{% endif %}">{{ etiqueta_en_gracia|default:"En gracia" }}</span>
+{% elif estado == "vencida_con_mora" %}
+    <span class="badge badge-vencida{% if clase_extra %} {{ clase_extra }}{% endif %}">Vencida con mora</span>
+{% else %}
+    <span class="badge badge-sin-pagos{% if clase_extra %} {{ clase_extra }}{% endif %}">Sin pagos</span>
+{% endif %}

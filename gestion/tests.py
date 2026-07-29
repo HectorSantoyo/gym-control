@@ -5,7 +5,7 @@ from unittest.mock import patch
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
@@ -582,6 +582,25 @@ class PagoFlujoTests(TestCase):
         self.assertEqual(pago.periodo_inicio, date(2026, 7, 15))
         self.assertEqual(pago.periodo_fin, date(2026, 8, 14))
 
+    @patch("gestion.views.membresia.primer_periodo", wraps=membresia.primer_periodo)
+    @patch("gestion.views.timezone.localdate")
+    def test_primer_pago_usa_membresia_primer_periodo(self, mock_localdate, mock_primer_periodo):
+        # calcular_periodo_natural() y primer_periodo() producen hoy el mismo
+        # resultado, así que una prueba que solo verifique fechas no detectaría
+        # si la vista volviera a saltarse el wrapper. Este mock protege
+        # específicamente esa decisión de diseño (ver membresia.py).
+        mock_localdate.return_value = date(2026, 7, 15)
+        cliente = self._crear_cliente(dia_pago=DiaPago.DIA_1)
+        response = self.client.post(
+            reverse("gestion:pago_registrar", args=[cliente.id_acceso]),
+            self._datos_pago(periodo_seleccionado="2026-07-01", fecha_pago="2026-07-01"),
+        )
+        self.assertRedirects(response, reverse("gestion:cliente_detalle", args=[cliente.id_acceso]))
+        mock_primer_periodo.assert_called_once_with(cliente.dia_pago, date(2026, 7, 1))
+        pago = Pago.objects.get(cliente=cliente)
+        self.assertEqual(pago.periodo_inicio, date(2026, 7, 1))
+        self.assertEqual(pago.periodo_fin, date(2026, 7, 31))
+
     @patch("gestion.views.timezone.localdate")
     def test_seleccion_periodo_anterior_permite_pago_historico(self, mock_localdate):
         mock_localdate.return_value = date(2026, 3, 10)
@@ -682,6 +701,65 @@ class PagoFlujoTests(TestCase):
 
         respuesta_siguiente = self.client.get(reverse("gestion:pago_registrar", args=[cliente.id_acceso]))
         self.assertNotIn("reajuste_inicial", respuesta_siguiente.context["form"].fields)
+
+    def test_reajuste_inicial_opciones_derivan_de_membresia_reajustes_validos(self):
+        cliente = self._crear_cliente()
+        response = self.client.get(reverse("gestion:pago_registrar", args=[cliente.id_acceso]))
+        opciones = response.context["form"].fields["reajuste_inicial"].widget.choices
+
+        # Comportamiento actual: mismo orden, cuantización a centavos y
+        # etiquetas que antes de derivar las opciones desde membresia.py.
+        self.assertEqual(
+            opciones,
+            [
+                (Decimal("-50.00"), "-$50"),
+                (Decimal("0.00"), "Sin reajuste"),
+                (Decimal("50.00"), "+$50"),
+            ],
+        )
+        # Fuente única: los valores deben coincidir exactamente con
+        # membresia.REAJUSTES_VALIDOS (cuantizados), no con literales propios.
+        self.assertEqual(
+            [valor for valor, _ in opciones],
+            [valor.quantize(Decimal("0.01")) for valor in membresia.REAJUSTES_VALIDOS],
+        )
+
+    def test_reajuste_inicial_valor_inicial_es_sin_reajuste(self):
+        cliente = self._crear_cliente()
+        response = self.client.get(reverse("gestion:pago_registrar", args=[cliente.id_acceso]))
+        campo = response.context["form"]["reajuste_inicial"]
+        self.assertEqual(campo.value(), Decimal("0.00"))
+
+        seleccionadas = [opcion.choice_label for opcion in campo if opcion.data["selected"]]
+        self.assertEqual(seleccionadas, ["Sin reajuste"])
+
+    @patch("gestion.views.timezone.localdate")
+    def test_reajuste_inicial_acepta_los_tres_valores_permitidos(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 1, 15)
+        casos = [("-50", Decimal("280")), ("0", Decimal("330")), ("50", Decimal("380"))]
+        for valor, total_esperado in casos:
+            with self.subTest(valor=valor):
+                cliente = self._crear_cliente(nombre_completo=f"Cliente reajuste {valor}")
+                response = self.client.post(
+                    reverse("gestion:pago_registrar", args=[cliente.id_acceso]),
+                    self._datos_pago(periodo_seleccionado="2026-01-01", reajuste_inicial=valor),
+                )
+                self.assertRedirects(response, reverse("gestion:cliente_detalle", args=[cliente.id_acceso]))
+                pago = Pago.objects.get(cliente=cliente)
+                self.assertEqual(pago.reajuste_inicial, Decimal(valor).quantize(Decimal("0.01")))
+                self.assertEqual(pago.total_pagado, total_esperado)
+
+    @patch("gestion.views.timezone.localdate")
+    def test_reajuste_inicial_rechaza_valor_fuera_del_catalogo(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 1, 15)
+        cliente = self._crear_cliente()
+        response = self.client.post(
+            reverse("gestion:pago_registrar", args=[cliente.id_acceso]),
+            self._datos_pago(periodo_seleccionado="2026-01-01", reajuste_inicial="25"),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["form"].errors.get("reajuste_inicial"))
+        self.assertEqual(Pago.objects.count(), 0)
 
     @patch("gestion.views.timezone.localdate")
     def test_fecha_pago_por_defecto_es_hoy(self, mock_localdate):
@@ -919,6 +997,20 @@ class PagoFlujoTests(TestCase):
         )
         response = self.client.get(reverse("gestion:cliente_detalle", args=[vigente.id_acceso]))
         self.assertContains(response, "badge-vigente")
+
+    @patch("gestion.views.timezone.localdate")
+    def test_detalle_usa_etiqueta_larga_en_periodo_de_gracia(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 3)
+        cliente = self._crear_cliente(nombre_completo="En Gracia", dia_pago=DiaPago.DIA_1)
+        Pago.objects.create(
+            cliente=cliente,
+            fecha_pago=date(2026, 1, 1),
+            mensualidad_base=Decimal("330"),
+            periodo_inicio=date(2026, 1, 1),
+            periodo_fin=date(2026, 1, 31),
+        )
+        response = self.client.get(reverse("gestion:cliente_detalle", args=[cliente.id_acceso]))
+        self.assertContains(response, "En periodo de gracia")
 
 
 class AsistenciaModeloTests(TestCase):
@@ -1323,6 +1415,20 @@ class DispositivoRecordadoTests(TestCase):
         self.assertTrue(cookie["httponly"])
         self.assertEqual(cookie["samesite"], "Lax")
 
+    @override_settings(DEBUG=True)
+    def test_cookie_no_segura_en_debug(self):
+        cliente = self._crear_cliente()
+        response = self._checkin_con_recordarme(cliente, recordarme=True)
+        cookie = response.cookies[self.COOKIE]
+        self.assertFalse(cookie["secure"])
+
+    @override_settings(DEBUG=False)
+    def test_cookie_segura_fuera_de_debug(self):
+        cliente = self._crear_cliente()
+        response = self._checkin_con_recordarme(cliente, recordarme=True)
+        cookie = response.cookies[self.COOKIE]
+        self.assertTrue(cookie["secure"])
+
 
 class AutenticacionTests(TestCase):
     CREDENCIALES = {"username": "encargado", "password": "clave-super-12345"}
@@ -1389,13 +1495,18 @@ class AutenticacionTests(TestCase):
         self.assertNotContains(response, "Cerrar sesión")
         self.assertNotContains(response, reverse("gestion:cliente_lista"))
         self.assertNotContains(response, reverse("gestion:membresia_lista"))
+        self.assertNotContains(response, reverse("gestion:asistencia_lista"))
 
         usuario = self._crear_usuario()
         self.client.force_login(usuario)
         response = self.client.get(reverse("gestion:inicio"))
+        self.assertContains(response, "Power Center Gym")
         self.assertContains(response, "Cerrar sesión")
         self.assertContains(response, "encargado")
+        self.assertContains(response, reverse("gestion:cliente_lista"))
         self.assertContains(response, reverse("gestion:membresia_lista"))
+        self.assertContains(response, reverse("gestion:asistencia_lista"))
+        self.assertContains(response, reverse("gestion:checkin"))
 
 
 class AsistenciaListaVistaTests(TestCase):
@@ -1451,6 +1562,13 @@ class AsistenciaListaVistaTests(TestCase):
         self.assertContains(response, "150")
         self.assertContains(response, "01/01/2020")
         self.assertContains(response, "Vencida con mora")
+
+    def test_lista_usa_etiqueta_corta_en_gracia(self):
+        cliente = self._crear_cliente()
+        Asistencia.objects.create(cliente=cliente, estado_membresia=membresia.ESTADO_EN_GRACIA)
+        response = self.client.get(reverse("gestion:asistencia_lista"))
+        self.assertContains(response, "En gracia")
+        self.assertNotContains(response, "En periodo de gracia")
 
     def test_busqueda_por_nombre(self):
         cliente_a = self._crear_cliente(nombre_completo="Ana Pérez")
@@ -2045,3 +2163,148 @@ class MembresiaListaVistaTests(TestCase):
             response,
             f'<option value="{membresia.ESTADO_SIN_PAGOS}" selected>',
         )
+
+
+class InicioVistaTests(TestCase):
+    def setUp(self):
+        self.usuario = User.objects.create_user(username="encargado", password="clave-super-12345")
+        self.client.force_login(self.usuario)
+        self.url = reverse("gestion:inicio")
+
+    def _crear_cliente(self, **kwargs):
+        defaults = {
+            "nombre_completo": "Cliente de prueba",
+            "dia_pago": DiaPago.DIA_1,
+            "tipo_tarifa": TipoTarifa.GENERAL,
+        }
+        defaults.update(kwargs)
+        return Cliente.objects.create(**defaults)
+
+    def _crear_pago(self, cliente, periodo_inicio, periodo_fin):
+        return Pago.objects.create(
+            cliente=cliente,
+            fecha_pago=periodo_inicio,
+            mensualidad_base=Decimal("330"),
+            periodo_inicio=periodo_inicio,
+            periodo_fin=periodo_fin,
+        )
+
+    def test_requiere_login(self):
+        self.client.logout()
+        response = self.client.get(self.url)
+        self.assertRedirects(response, f"{reverse('login')}?next={self.url}")
+
+    def test_muestra_power_center_gym(self):
+        response = self.client.get(self.url)
+        self.assertContains(response, "Power Center Gym")
+
+    def test_muestra_los_cuatro_accesos_rapidos(self):
+        response = self.client.get(self.url)
+        self.assertContains(response, reverse("gestion:cliente_lista"))
+        self.assertContains(response, reverse("gestion:membresia_lista"))
+        self.assertContains(response, reverse("gestion:asistencia_lista"))
+        self.assertContains(response, reverse("gestion:checkin"))
+
+    @patch("gestion.views.timezone.localdate")
+    def test_metricas_reflejan_los_datos_creados(self, mock_localdate):
+        hoy = date(2026, 1, 29)
+        mock_localdate.return_value = hoy
+
+        self._crear_cliente(nombre_completo="Inactivo", activo=False)
+
+        sin_pagos = self._crear_cliente(nombre_completo="Sin pagos")
+
+        vigente = self._crear_cliente(nombre_completo="Vigente")
+        self._crear_pago(vigente, date(2026, 6, 1), date(2026, 6, 30))
+
+        por_vencer = self._crear_cliente(nombre_completo="Por vencer")
+        self._crear_pago(por_vencer, date(2026, 1, 1), date(2026, 1, 31))
+
+        Asistencia.objects.create(
+            cliente=vigente,
+            fecha_hora=timezone.make_aware(datetime(2026, 1, 29, 9, 0)),
+            estado_membresia=membresia.ESTADO_VIGENTE,
+        )
+        Asistencia.objects.create(
+            cliente=vigente,
+            fecha_hora=timezone.make_aware(datetime(2026, 1, 28, 9, 0)),
+            estado_membresia=membresia.ESTADO_VIGENTE,
+        )
+
+        response = self.client.get(self.url)
+        self.assertEqual(response.context["total_clientes_activos"], 3)
+        self.assertEqual(response.context["membresias_vigentes"], 1)
+        self.assertEqual(response.context["membresias_por_vencer"], 1)
+        self.assertEqual(response.context["asistencias_hoy"], 1)
+        self.assertContains(response, '<span class="resumen-membresias-numero">3</span>')
+
+    @patch("gestion.views.timezone.localdate")
+    def test_no_genera_una_consulta_por_cliente(self, mock_localdate):
+        mock_localdate.return_value = date(2026, 2, 5)
+
+        for i in range(3):
+            self._crear_cliente(nombre_completo=f"Pocos {i}")
+        with CaptureQueriesContext(connection) as pocos:
+            self.client.get(self.url)
+
+        for i in range(30):
+            self._crear_cliente(nombre_completo=f"Muchos {i}")
+        with CaptureQueriesContext(connection) as muchos:
+            self.client.get(self.url)
+
+        self.assertEqual(len(pocos.captured_queries), len(muchos.captured_queries))
+
+
+class NavegacionActivaTests(TestCase):
+    def setUp(self):
+        self.usuario = User.objects.create_user(username="encargado", password="clave-super-12345")
+        self.client.force_login(self.usuario)
+
+    def _crear_cliente(self, **kwargs):
+        defaults = {
+            "nombre_completo": "Cliente de prueba",
+            "dia_pago": DiaPago.DIA_1,
+            "tipo_tarifa": TipoTarifa.GENERAL,
+        }
+        defaults.update(kwargs)
+        return Cliente.objects.create(**defaults)
+
+    def test_inicio_activa_inicio(self):
+        response = self.client.get(reverse("gestion:inicio"))
+        self.assertEqual(response.context["seccion_activa"], "inicio")
+
+    def test_lista_clientes_activa_clientes(self):
+        response = self.client.get(reverse("gestion:cliente_lista"))
+        self.assertEqual(response.context["seccion_activa"], "clientes")
+
+    def test_detalle_cliente_mantiene_clientes_activo(self):
+        cliente = self._crear_cliente()
+        response = self.client.get(reverse("gestion:cliente_detalle", args=[cliente.id_acceso]))
+        self.assertEqual(response.context["seccion_activa"], "clientes")
+
+    def test_registrar_pago_mantiene_clientes_activo(self):
+        cliente = self._crear_cliente()
+        response = self.client.get(reverse("gestion:pago_registrar", args=[cliente.id_acceso]))
+        self.assertEqual(response.context["seccion_activa"], "clientes")
+
+    def test_membresias_activa_membresias(self):
+        response = self.client.get(reverse("gestion:membresia_lista"))
+        self.assertEqual(response.context["seccion_activa"], "membresias")
+
+    def test_asistencias_activa_asistencias(self):
+        response = self.client.get(reverse("gestion:asistencia_lista"))
+        self.assertEqual(response.context["seccion_activa"], "asistencias")
+
+    def test_checkin_activa_checkin(self):
+        response = self.client.get(reverse("gestion:checkin"))
+        self.assertEqual(response.context["seccion_activa"], "checkin")
+
+    def test_resultado_checkin_mantiene_checkin_activo(self):
+        cliente = self._crear_cliente()
+        response = self.client.post(reverse("gestion:checkin"), {"id_acceso": str(cliente.id_acceso)})
+        self.assertEqual(response.context["seccion_activa"], "checkin")
+
+    def test_nav_marca_la_clase_active_en_el_enlace_correspondiente(self):
+        response = self.client.get(reverse("gestion:cliente_lista"))
+        self.assertContains(response, 'class="nav-link active"')
+        self.assertContains(response, 'aria-current="page"')

@@ -50,17 +50,7 @@
     <div class="card-body">
         <h2 class="h5 mb-3">Membresía</h2>
 
-        {% if estado_actual == "vigente" %}
-            <span class="badge badge-vigente mb-3">Vigente</span>
-        {% elif estado_actual == "por_vencer" %}
-            <span class="badge badge-por-vencer mb-3">Por vencer</span>
-        {% elif estado_actual == "en_gracia" %}
-            <span class="badge badge-en-gracia mb-3">En periodo de gracia</span>
-        {% elif estado_actual == "vencida_con_mora" %}
-            <span class="badge badge-vencida mb-3">Vencida con mora</span>
-        {% else %}
-            <span class="badge badge-sin-pagos mb-3">Sin pagos</span>
-        {% endif %}
+        {% include "gestion/_badge_estado.html" with estado=estado_actual clase_extra="mb-3" etiqueta_en_gracia="En periodo de gracia" %}
 
         <dl class="row text-start">
             <dt class="col-6">Tipo de tarifa</dt>

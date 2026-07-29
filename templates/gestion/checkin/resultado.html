@@ -16,20 +16,17 @@
             <h1 class="h4 mb-1">{{ cliente.nombre_completo }}</h1>
             <p class="text-body-secondary mb-3">Entrada registrada a las {{ asistencia.fecha_hora|date:"H:i" }}</p>
 
+            {% include "gestion/_badge_estado.html" with estado=asistencia.estado_membresia clase_extra="mb-3" etiqueta_en_gracia="En periodo de gracia" %}
+
             {% if asistencia.estado_membresia == "vigente" %}
-                <span class="badge badge-vigente mb-3">Vigente</span>
                 <p>Tu membresía está vigente. ¡Bienvenido!</p>
             {% elif asistencia.estado_membresia == "por_vencer" %}
-                <span class="badge badge-por-vencer mb-3">Por vencer</span>
                 <p>Tu membresía está por vencer pronto.</p>
             {% elif asistencia.estado_membresia == "en_gracia" %}
-                <span class="badge badge-en-gracia mb-3">En periodo de gracia</span>
                 <p>Tu membresía está vencida, pero dentro del periodo de gracia.</p>
             {% elif asistencia.estado_membresia == "vencida_con_mora" %}
-                <span class="badge badge-vencida mb-3">Vencida con mora</span>
                 <p>Tu membresía está vencida. Acude con el encargado para regularizar tu pago.</p>
             {% else %}
-                <span class="badge badge-sin-pagos mb-3">Sin pagos</span>
                 <p>Aún no tienes pagos registrados. Acude con el encargado para más información.</p>
             {% endif %}
             {% endwith %}

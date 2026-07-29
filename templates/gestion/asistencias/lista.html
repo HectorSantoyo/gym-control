@@ -46,17 +46,7 @@
             </span>
         </div>
 
-        {% if asistencia.estado_membresia == "vigente" %}
-            <span class="badge badge-vigente">Vigente</span>
-        {% elif asistencia.estado_membresia == "por_vencer" %}
-            <span class="badge badge-por-vencer">Por vencer</span>
-        {% elif asistencia.estado_membresia == "en_gracia" %}
-            <span class="badge badge-en-gracia">En gracia</span>
-        {% elif asistencia.estado_membresia == "vencida_con_mora" %}
-            <span class="badge badge-vencida">Vencida con mora</span>
-        {% else %}
-            <span class="badge badge-sin-pagos">Sin pagos</span>
-        {% endif %}
+        {% include "gestion/_badge_estado.html" with estado=asistencia.estado_membresia %}
 
         <a href="{% url 'gestion:cliente_detalle' asistencia.cliente.id_acceso %}" class="btn btn-outline-primary btn-sm">Ver cliente</a>
     </div>

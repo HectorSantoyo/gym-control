@@ -1,13 +1,69 @@
 {% extends "base.html" %}
 
-{% block title %}Inicio · Gym Control{% endblock %}
+{% block title %}Inicio · Power Center Gym{% endblock %}
 
 {% block content %}
-<div class="text-center py-5">
-    <h1 class="display-6 fw-bold">Gym Control</h1>
-    <p class="lead text-body-secondary">
-        Sistema de gestión para el gimnasio: clientes, pagos, asistencias y check-in en un solo lugar.
+<div class="inicio-encabezado text-center">
+    <p class="inicio-subtitulo mb-1">Gym Control</p>
+    <h1 class="inicio-marca mb-2">Power Center Gym</h1>
+    <p class="lead text-body-secondary mb-0">
+        Clientes, membresías, asistencias y check-in en un solo lugar.
     </p>
-    <a href="{% url 'gestion:cliente_lista' %}" class="btn btn-primary btn-lg mt-2">Ver clientes</a>
+</div>
+
+<h2 class="h5 mt-4 mb-3">Accesos rápidos</h2>
+<div class="row row-cols-1 row-cols-sm-2 row-cols-lg-4 g-3 acciones-rapidas">
+    <div class="col">
+        <a href="{% url 'gestion:cliente_lista' %}" class="card">
+            <div class="card-body">
+                <h3 class="h6 card-title mb-1">Clientes</h3>
+                <p class="card-text small text-body-secondary mb-0">Alta, edición y consulta de clientes.</p>
+            </div>
+        </a>
+    </div>
+    <div class="col">
+        <a href="{% url 'gestion:membresia_lista' %}" class="card">
+            <div class="card-body">
+                <h3 class="h6 card-title mb-1">Membresías</h3>
+                <p class="card-text small text-body-secondary mb-0">Estado de vigencia de cada cliente.</p>
+            </div>
+        </a>
+    </div>
+    <div class="col">
+        <a href="{% url 'gestion:asistencia_lista' %}" class="card">
+            <div class="card-body">
+                <h3 class="h6 card-title mb-1">Asistencias</h3>
+                <p class="card-text small text-body-secondary mb-0">Historial de entradas registradas.</p>
+            </div>
+        </a>
+    </div>
+    <div class="col">
+        <a href="{% url 'gestion:checkin' %}" class="card">
+            <div class="card-body">
+                <h3 class="h6 card-title mb-1">Check-in</h3>
+                <p class="card-text small text-body-secondary mb-0">Pantalla pública de registro de entrada.</p>
+            </div>
+        </a>
+    </div>
+</div>
+
+<h2 class="h5 mt-4 mb-3">Resumen de hoy</h2>
+<div class="resumen-membresias mb-2">
+    <div class="resumen-membresias-item" style="--color-item-accent: var(--color-primary);">
+        <span class="resumen-membresias-numero">{{ total_clientes_activos }}</span>
+        <span class="resumen-membresias-etiqueta">Clientes activos</span>
+    </div>
+    <div class="resumen-membresias-item" style="--color-item-accent: var(--color-vigente);">
+        <span class="resumen-membresias-numero">{{ membresias_vigentes }}</span>
+        <span class="resumen-membresias-etiqueta">Membresías vigentes</span>
+    </div>
+    <div class="resumen-membresias-item" style="--color-item-accent: var(--color-por-vencer);">
+        <span class="resumen-membresias-numero">{{ membresias_por_vencer }}</span>
+        <span class="resumen-membresias-etiqueta">Por vencer</span>
+    </div>
+    <div class="resumen-membresias-item" style="--color-item-accent: var(--color-primary);">
+        <span class="resumen-membresias-numero">{{ asistencias_hoy }}</span>
+        <span class="resumen-membresias-etiqueta">Asistencias de hoy</span>
+    </div>
 </div>
 {% endblock %}

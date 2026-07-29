@@ -3,6 +3,7 @@ from decimal import Decimal
 from django import forms
 from django.core.validators import RegexValidator
 
+from . import membresia
 from .models import Cliente, Pago
 
 ID_ACCESO_VALIDATOR = RegexValidator(r"^\d{4}$", "Ingresa un ID de 4 dígitos.")
@@ -57,11 +58,24 @@ METODO_PAGO_CHOICES = [
     ("otro", "Otro"),
 ]
 
+REAJUSTE_INICIAL_CENTAVOS = Decimal("0.01")
+
+REAJUSTE_INICIAL_ETIQUETAS = {
+    Decimal("-50"): "-$50",
+    Decimal("0"): "Sin reajuste",
+    Decimal("50"): "+$50",
+}
+
+# membresia.REAJUSTES_VALIDOS es la única fuente de verdad de los valores
+# permitidos; aquí solo se cuantizan a 2 decimales para que coincidan en
+# texto con el valor que trae un Pago existente (o el initial forzado más
+# abajo), y así el radio correcto quede marcado como seleccionado.
 REAJUSTE_INICIAL_CHOICES = [
-    (Decimal("-50.00"), "-$50"),
-    (Decimal("0.00"), "Sin reajuste"),
-    (Decimal("50.00"), "+$50"),
+    (valor.quantize(REAJUSTE_INICIAL_CENTAVOS), REAJUSTE_INICIAL_ETIQUETAS[valor])
+    for valor in membresia.REAJUSTES_VALIDOS
 ]
+
+REAJUSTE_INICIAL_SIN_REAJUSTE = Decimal("0").quantize(REAJUSTE_INICIAL_CENTAVOS)
 
 _MESES = (
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
@@ -132,7 +146,7 @@ class PagoForm(forms.ModelForm):
                 # default crudo del modelo (Decimal("0"), sin cuantizar a 2
                 # decimales), que no coincide en texto con el choice
                 # "0.00" y por eso "Sin reajuste" no quedaba preseleccionado.
-                self.initial["reajuste_inicial"] = Decimal("0.00")
+                self.initial["reajuste_inicial"] = REAJUSTE_INICIAL_SIN_REAJUSTE
         else:
             del self.fields["reajuste_inicial"]
 

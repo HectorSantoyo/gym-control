@@ -60,17 +60,7 @@
             </span>
         </div>
 
-        {% if resultado.estado == "vigente" %}
-            <span class="badge badge-vigente">Vigente</span>
-        {% elif resultado.estado == "por_vencer" %}
-            <span class="badge badge-por-vencer">Por vencer</span>
-        {% elif resultado.estado == "en_gracia" %}
-            <span class="badge badge-en-gracia">En gracia</span>
-        {% elif resultado.estado == "vencida_con_mora" %}
-            <span class="badge badge-vencida">Vencida con mora</span>
-        {% else %}
-            <span class="badge badge-sin-pagos">Sin pagos</span>
-        {% endif %}
+        {% include "gestion/_badge_estado.html" with estado=resultado.estado %}
 
         <div class="d-flex gap-2">
             <a href="{% url 'gestion:cliente_detalle' resultado.cliente.id_acceso %}" class="btn btn-outline-primary btn-sm">Ver cliente</a>
